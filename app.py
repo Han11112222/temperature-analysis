@@ -12,6 +12,7 @@ st.title("🌡️ 기온 분석 및 이상기온 모니터링 대시보드")
 # 1. 데이터 로드 (구글 시트에서 직접 가져오기)
 @st.cache_data
 def load_data():
+    # 공유해주신 시트 ID
     sheet_id = "13HrIz6OytYDykXeXzXJ02I6XbaKin1YaKBoO2kBd6Bs"
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
     df = pd.read_csv(url)
@@ -60,7 +61,7 @@ if target_year in monthly_avg['연도'].values and len(monthly_avg[monthly_avg['
     
     is_abnormal = abs(curr_val - mean_5yr) > std_5yr
 
-    # 표 데이터 생성 (실제 데이터로 자동 연산)
+    # 표 데이터 생성
     table_data = {
         '구분': ['월 평균', '5년 평균', '표준편차'],
         **{str(yr): ['', '', ''] for yr in past_7_years_list},
@@ -77,7 +78,6 @@ if target_year in monthly_avg['연도'].values and len(monthly_avg[monthly_avg['
     table_data['구분'][2] = '표준편차'
     table_data[str(target_year)][2] = f"{std_5yr:.4f}"
     
-    # 판별 결과 추가
     if is_abnormal:
         table_data['구분'].append('판별결과')
         for k in table_data.keys():
@@ -85,17 +85,23 @@ if target_year in monthly_avg['연도'].values and len(monthly_avg[monthly_avg['
             table_data[k].append('')
         table_data[str(target_year)][3] = '🚨 이상'
 
-    # 표 렌더링
     st.dataframe(pd.DataFrame(table_data), hide_index=True)
 
     st.markdown("---")
 
     # ---------------------------------------------------------
-    # 4. 이상기온 판별 섹션 (세련된 불릿 그래프)
+    # 4. 이상기온 판별 섹션 상세 (디자인 및 가독성 대폭 개선)
     # ---------------------------------------------------------
     st.header(f"🚨 {selected_month}월 이상기온 판별 상세 (한국가스공사 기준)")
     
-    # 요약 지표 (Metrics) 표시
+    # [추가] 이상기온 발생 여부에 따른 직관적 알람 배너
+    if is_abnormal:
+        st.error(f"🚨 **주의:** {target_year}년 {selected_month}월은 가스공사 기준 **'이상기온'**으로 판별되었습니다! (도시가스 실적 변동에 유의하세요)", icon="🚨")
+    else:
+        st.success(f"✅ {target_year}년 {selected_month}월은 가스공사 기준 **'정상 기온'** 범위 내에 있습니다.", icon="✅")
+    
+    st.write("") # 약간의 여백 추가
+
     m_col1, m_col2, m_col3, m_col4 = st.columns(4)
     m_col1.metric("최근 7년 평균", f"{mean_7yr:.1f}℃")
     m_col2.metric("5년 평균 (최대/최소 제외)", f"{mean_5yr:.1f}℃")
@@ -105,47 +111,61 @@ if target_year in monthly_avg['연도'].values and len(monthly_avg[monthly_avg['
     status_color = "inverse" if is_abnormal else "normal"
     m_col4.metric(f"기준 연도({target_year}) 평균", f"{curr_val:.1f}℃", delta=status_text, delta_color=status_color)
 
-    # 누락되었던 그래프(fig_abnormal) 생성 코드 복구
     fig_abnormal = go.Figure()
+    
+    # 정상 범위 하한/상한 계산
+    lower_bound = mean_5yr - std_5yr
+    upper_bound = mean_5yr + std_5yr
 
-    # 정상 범위 대역 (표준편차 범위)
+    # 정상 범위 대역 (디자인 개선: 테두리 추가 및 색상 조정)
     fig_abnormal.add_vrect(
-        x0=mean_5yr - std_5yr, x1=mean_5yr + std_5yr,
-        fillcolor="green", opacity=0.15,
-        layer="below", line_width=0,
-        annotation_text="정상 범위 (5년 평균 ± 표준편차)", annotation_position="top left",
-        annotation_font=dict(color="green")
+        x0=lower_bound, x1=upper_bound,
+        fillcolor="#2ca02c", opacity=0.15, layer="below", 
+        line_width=1, line_dash="dot", line_color="green",
+        annotation_text="정상 기온 범위", annotation_position="top left",
+        annotation_font=dict(color="green", size=13, size=13)
     )
-
+    
     # 5년 평균 기준선
     fig_abnormal.add_vline(
-        x=mean_5yr,
-        line=dict(color="green", width=2, dash="dash"),
-        annotation_text="5년 평균", annotation_position="bottom right"
+        x=mean_5yr, 
+        line=dict(color="green", width=2, dash="dash"), 
+        annotation_text=f"5년 평균 ({mean_5yr:.1f}℃)", 
+        annotation_position="bottom right"
+    )
+
+    # [추가] 정상 범위 상한/하한 수치 표기 (그래프 내 직접 텍스트)
+    fig_abnormal.add_annotation(
+        x=lower_bound, y=-0.5, 
+        text=f"◀ 하한: {lower_bound:.2f}℃", 
+        showarrow=False, font=dict(color="green", size=12), xanchor="right"
+    )
+    fig_abnormal.add_annotation(
+        x=upper_bound, y=-0.5, 
+        text=f"상한: {upper_bound:.2f}℃ ▶", 
+        showarrow=False, font=dict(color="green", size=12), xanchor="left"
     )
 
     # 당해연도 표식
-    marker_color = "#d62728" if is_abnormal else "#1f77b4" # 이상기온이면 빨간색, 정상은 파란색
+    marker_color = "#d62728" if is_abnormal else "#1f77b4"
     fig_abnormal.add_trace(go.Scatter(
-        x=[curr_val], y=[0],
-        mode="markers+text", name=f"{target_year}년",
-        marker=dict(size=30, color=marker_color, symbol="diamond", line=dict(color="white", width=2)),
+        x=[curr_val], y=[0], mode="markers+text", name=f"{target_year}년",
+        marker=dict(size=35, color=marker_color, symbol="diamond", line=dict(color="white", width=2)),
         text=[f"<b>{target_year}년 ({curr_val}℃)</b>"], textposition="top center",
-        textfont=dict(size=14, color=marker_color)
+        textfont=dict(size=15, color=marker_color)
     ))
-
-    # 과거 7년 데이터 포인트
+    
+    # 과거 7년 데이터 포인트 (점 디자인 세련되게 변경)
     fig_abnormal.add_trace(go.Scatter(
-        x=past_7_years['평균기온(℃)'], y=[0]*7,
-        mode="markers", name="과거 7년",
-        marker=dict(size=12, color="gray", opacity=0.5),
+        x=past_7_years['평균기온(℃)'], y=[0]*7, mode="markers", name="과거 7년",
+        marker=dict(size=14, color="rgba(128, 128, 128, 0.5)", line=dict(color="gray", width=1)),
         hoverinfo="x+name"
     ))
-
+    
     fig_abnormal.update_layout(
-        height=300,
-        yaxis=dict(showticklabels=False, range=[-1, 1], showgrid=False, zeroline=False),
-        xaxis=dict(title="평균기온(℃)", gridcolor="lightgray"),
+        height=320, 
+        yaxis=dict(showticklabels=False, range=[-1.2, 1.2], showgrid=False, zeroline=False), 
+        xaxis=dict(title="평균기온(℃)", gridcolor="#f0f0f0", showline=True, linecolor='lightgray'),
         showlegend=False,
         margin=dict(l=40, r=40, t=50, b=40),
         plot_bgcolor="white"
@@ -153,26 +173,29 @@ if target_year in monthly_avg['연도'].values and len(monthly_avg[monthly_avg['
     st.plotly_chart(fig_abnormal, use_container_width=True)
 
 else:
-    st.info("과거 7년치 데이터가 충분히 누적되지 않아 이상기온 판별 상세 로직을 계산할 수 없습니다.")
+    st.info("데이터가 충분하지 않습니다.")
 
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 5. 일별 평균기온 매트릭스 (비율 및 크기 최적화)
+# 5. 일별 평균기온 매트릭스 (하단 평균 행 추가)
 # ---------------------------------------------------------
 st.header("📊 상세 일별 기온 매트릭스")
 
-# 매트릭스 전용 컨트롤 (연도 범위)
-min_year = int(df['연도'].min())
-selected_years = st.slider("기온 매트릭스 연도 범위 설정", min_year, max_year, (min_year, max_year))
+min_year_val = int(df['연도'].min())
+selected_years = st.slider("기온 매트릭스 연도 범위 설정", min_year_val, max_year, (min_year_val, max_year))
 
-# 데이터 필터링
 filtered_df = df[(df['월'] == selected_month) & 
                  (df['연도'] >= selected_years[0]) & 
                  (df['연도'] <= selected_years[1])]
 
+# 피벗 테이블 생성 (1~31일)
 pivot_df = filtered_df.pivot(index='일', columns='연도', values='평균기온(℃)')
 pivot_df = pivot_df.reindex(range(1, 32))
+
+# --- 핵심: 월 평균 행 추가 ---
+avg_series = filtered_df.groupby('연도')['평균기온(℃)'].mean()
+pivot_df.loc['평균'] = avg_series 
 
 # 매트릭스 시각화
 fig_heatmap = px.imshow(
@@ -181,21 +204,17 @@ fig_heatmap = px.imshow(
     x=pivot_df.columns,
     y=pivot_df.index,
     color_continuous_scale='RdBu_r',
-    aspect="auto",  # 가로세로 비율 자동 조절
+    aspect="auto",
     text_auto='.1f'  
 )
 
-fig_heatmap.update_yaxes(autorange="reversed", tickmode='linear', dtick=1)
+fig_heatmap.update_yaxes(autorange="reversed", tickmode='linear')
 fig_heatmap.update_xaxes(side="top", tickangle=0)
 
-# 셀 크기 조정을 위한 레이아웃 세부 조정
 fig_heatmap.update_layout(
-    height=800, # 세로 크기 축소 (기존 대비 2/3 수준)
-    margin=dict(l=40, r=40, t=80, b=40),
-    xaxis=dict(tickfont=dict(size=12)),
-    yaxis=dict(tickfont=dict(size=12))
+    height=850, # 평균 행 추가를 고려해 살짝 높임
+    margin=dict(l=40, r=40, t=80, b=40)
 )
-
 fig_heatmap.update_traces(textfont=dict(size=14))
 
 st.plotly_chart(fig_heatmap, use_container_width=True)
