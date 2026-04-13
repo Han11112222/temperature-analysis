@@ -89,7 +89,7 @@ if target_year in monthly_avg['연도'].values and len(monthly_avg[monthly_avg['
     st.markdown("---")
 
     # ---------------------------------------------------------
-    # 4. 이상기온 판별 섹션 상세 (불릿 그래프)
+    # 4. 이상기온 판별 섹션 상세
     # ---------------------------------------------------------
     st.header(f"🚨 {selected_month}월 이상기온 판별 상세 (한국가스공사 기준)")
     
@@ -146,7 +146,7 @@ else:
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 5. 일별 평균기온 매트릭스 (최종 평균 행 반영)
+# 5. 일별 평균기온 매트릭스 (평균 행 및 31일 짤림 해결)
 # ---------------------------------------------------------
 st.header("📊 상세 일별 기온 매트릭스")
 
@@ -161,9 +161,12 @@ filtered_df = df[(df['월'] == selected_month) &
 pivot_df = filtered_df.pivot(index='일', columns='연도', values='평균기온(℃)')
 pivot_df = pivot_df.reindex(range(1, 32))
 
-# --- 월 평균 행 추가 로직 ---
+# 월 평균 행 추가
 avg_series = filtered_df.groupby('연도')['평균기온(℃)'].mean()
-pivot_df.loc['평균'] = avg_series # '평균'이라는 이름의 새로운 행 추가
+pivot_df.loc['평균'] = avg_series 
+
+# ★ 핵심: Y축 인덱스를 문자열로 변환하여 숫자와 문자가 섞여 발생하는 축 렌더링 오류 방지
+pivot_df.index = pivot_df.index.astype(str)
 
 # 매트릭스 시각화
 fig_heatmap = px.imshow(
@@ -176,11 +179,12 @@ fig_heatmap = px.imshow(
     text_auto='.1f'  
 )
 
-fig_heatmap.update_yaxes(autorange="reversed", tickmode='linear')
+# autorange="reversed"를 통해 1일이 맨 위에 오도록 설정
+fig_heatmap.update_yaxes(autorange="reversed")
 fig_heatmap.update_xaxes(side="top", tickangle=0)
 
 fig_heatmap.update_layout(
-    height=850, 
+    height=900, # 하단 행까지 충분히 보이도록 높이 확보
     margin=dict(l=40, r=40, t=80, b=40)
 )
 fig_heatmap.update_traces(textfont=dict(size=14))
