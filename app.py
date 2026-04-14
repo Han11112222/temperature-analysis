@@ -55,7 +55,7 @@ def scale_size(v):
     return 15 + ((v - min_s) / (max_s - min_s)) * 35 
 
 # ---------------------------------------------------------
-# 3. 최상단: 월 평균기온 현황 요약 표 (★ 배경 하이라이트 기능 추가)
+# 3. 최상단: 월 평균기온 현황 요약 표 (★ 배경 하이라이트 및 레이아웃 수정)
 # ---------------------------------------------------------
 st.header(f"📋 {selected_month}월 평균기온 현황 요약")
 
@@ -91,40 +91,61 @@ if target_year in monthly_avg['연도'].values and len(monthly_avg[monthly_avg['
     
     for i, yr in enumerate(past_7_years_list):
         t = past_7_temps[i]
-        # 가로줄의 모든 칸을 동일하게 채움
-        table_data[str(yr)] = [f"{t}", '', f"{mean_5yr:.1f}℃", f"{std_5yr:.4f}"]
+        # 첫 번째 연도(맨 앞 칸)에만 5년 평균과 표준편차를 넣고 나머지는 비움
+        if i == 0:
+            table_data[str(yr)] = [f"{t}", '', f"{mean_5yr:.1f}℃", f"{std_5yr:.4f}"]
+        else:
+            table_data[str(yr)] = [f"{t}", '', '', '']
 
-    table_data['7년 평균'] = [f"{mean_7yr:.1f}", '', f"{mean_5yr:.1f}℃", f"{std_5yr:.4f}"]
-    table_data[str(target_year)] = [target_str, judgment_str, f"{mean_5yr:.1f}℃", f"{std_5yr:.4f}"]
+    table_data['7년 평균'] = [f"{mean_7yr:.1f}", '', '', '']
+    table_data[str(target_year)] = [target_str, judgment_str, '', '']
 
     df_table = pd.DataFrame(table_data)
 
-    # ★ 데이터프레임 스타일링 함수 
+    # ★ 데이터프레임 스타일링 함수
     def apply_highlight(x):
         df_style = pd.DataFrame('', index=x.index, columns=x.columns)
         
-        # 1. 7년 중 최고(붉은색)/최저(푸른색) 하이라이트
-        for yr in past_7_years_list:
-            col_name = str(yr)
-            val_str = x.loc[0, col_name]
+        # 1. 월 평균(첫 번째 줄)의 전체 배경색 및 7년 최고/최저 글자색 변경
+        for col in x.columns:
+            if col in ['구분', '7년 평균']:
+                continue
+                
+            val_str = x.loc[0, col]
             try:
-                val = float(val_str)
-                if val == max_t:
-                    df_style.loc[0, col_name] = 'background-color: #ffebee; color: #d32f2f; font-weight: bold;'
-                elif val == min_t:
-                    df_style.loc[0, col_name] = 'background-color: #e3f2fd; color: #1976d2; font-weight: bold;'
-            except:
+                # "0.3 (이상저온)" 등에서 숫자만 추출하여 비교
+                val = float(str(val_str).split()[0])
+                
+                # 5년 평균 기준 배경색 설정
+                bg_color = '#ffebee' if val > mean_5yr else ('#e3f2fd' if val < mean_5yr else '')
+                
+                text_color = 'black'
+                font_weight = 'normal'
+                
+                # 과거 7년에 대해서만 최고/최저 글자색 변경
+                if col in [str(y) for y in past_7_years_list]:
+                    if val == max_t:
+                        text_color = '#d32f2f' # 최고기온 붉은색 글자
+                        font_weight = 'bold'
+                    elif val == min_t:
+                        text_color = '#1976d2' # 최저기온 푸른색 글자
+                        font_weight = 'bold'
+                elif col == str(target_year):
+                    if is_abnormal:
+                        font_weight = 'bold'
+
+                style_str = f'color: {text_color}; font-weight: {font_weight};'
+                if bg_color:
+                    style_str += f' background-color: {bg_color};'
+                
+                df_style.loc[0, col] = style_str
+            except Exception:
                 pass
 
-        # 2. 당해연도 하이라이트 (이상고온: 붉은배경, 이상저온: 푸른배경)
+        # 2. 당해연도 '판정 결과'(두 번째 줄) 텍스트 색상 강조
         if is_abnormal:
-            bg_color = '#ffebee' if curr_val > mean_5yr else '#e3f2fd'
+            col_idx = x.columns.get_loc(str(target_year))
             text_color = '#d32f2f' if curr_val > mean_5yr else '#1976d2'
-            col_idx = df_table.columns.get_loc(str(target_year))
-            
-            # 첫 번째 줄('월 평균')의 당해연도 셀 하이라이트
-            df_style.iloc[0, col_idx] = f'background-color: {bg_color}; color: {text_color}; font-weight: bold;'
-            # 두 번째 줄('판정 결과')의 텍스트 색상 강조
             df_style.iloc[1, col_idx] = f'color: {text_color}; font-weight: bold;'
             
         return df_style
