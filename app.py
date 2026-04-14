@@ -1,371 +1,246 @@
-# -*- coding: utf-8 -*-
-# 최근 L년 평균 vs 실제 — 연속구간 비교 + "월별 vs 연평균" R² 비교
-# 백테스트 요약: 1–4년 vs 5–8년만 KPI/막대
-# 히트맵: 제외 연도 멀티셀렉트 + 스크롤 줌
-# 복원: 연도별 최적 L 추이, 최근(1–3년) 최적 연도 시각화
-
-from pathlib import Path
-import re
-import numpy as np
-import pandas as pd
 import streamlit as st
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import numpy as np
 
-st.set_page_config(page_title="최근 L년 평균 vs 실제 — 연속구간 + 월별 vs 연평균 비교", layout="wide")
+# 페이지 기본 설정
+st.set_page_config(page_title="기온 분석 및 이상기온 대시보드", layout="wide")
 
-# ----------------- 레이아웃 -----------------
-def tidy_layout(fig, title=None, height=360):
-    if title:
-        fig.update_layout(title=title, title_pad=dict(t=36, l=6, r=6, b=6))
-    fig.update_layout(height=height, margin=dict(l=70, r=30, t=90, b=70))
-    return fig
+st.title("🌡️ 기온 분석 및 이상기온 모니터링 대시보드")
 
-# ----------------- 파서(일→월 평균 집계) -----------------
-MONTH_ALIASES = {
-    "jan":1,"january":1,"1":1,"01":1,"1월":1,
-    "feb":2,"february":2,"2":2,"02":2,"2월":2,
-    "mar":3,"march":3,"3":3,"03":3,"3월":3,
-    "apr":4,"april":4,"4":4,"04":4,"4월":4,
-    "may":5,"5":5,"05":5,"5월":5,
-    "jun":6,"june":6,"6":6,"06":6,"6월":6,
-    "jul":7,"july":7,"7":7,"07":7,"7월":7,
-    "aug":8,"august":8,"8":8,"08":8,"8월":8,
-    "sep":9,"sept":9,"september":9,"9":9,"09":9,"9월":9,
-    "oct":10,"october":10,"10":10,"10월":10,
-    "nov":11,"november":11,"11":11,"11월":11,
-    "dec":12,"december":12,"12":12,"12월":12,
-}
-def norm_month(col)->int|None:
-    s = str(col).strip().lower().replace(" ", "")
-    s = s.replace("month","").replace("월평균","").replace("평균","")
-    if re.fullmatch(r"\d+\s*월", str(col)):
-        s = str(col).strip().lower().replace(" ","").replace("월","")
-    return MONTH_ALIASES.get(s)
-
-def _clean(s: str) -> str:
-    return re.sub(r"[()\[\]{}℃°/·\s]", "", str(s)).lower()
-
-def try_parse_wide(df_raw: pd.DataFrame):
-    for header_row in range(0, min(5, len(df_raw))):
-        hdr = list(df_raw.iloc[header_row])
-        body = df_raw.iloc[header_row+1:].copy()
-        body.columns = hdr
-        body = body.rename(columns={body.columns[0]: "year"})
-        month_map = {}
-        for c in body.columns[1:]:
-            m = norm_month(c)
-            if m: month_map[c]=m
-        if len(month_map) >= 6:
-            use = ["year"] + list(month_map.keys())
-            body = body[use].rename(columns=month_map)
-            body["year"] = pd.to_numeric(body["year"], errors="coerce")
-            body = body.dropna(subset=["year"])
-            body["year"] = body["year"].astype(int)
-            long = body.melt(id_vars="year", var_name="month", value_name="temp")
-            long["month"] = long["month"].astype(int)
-            long["temp"]  = pd.to_numeric(long["temp"], errors="coerce")
-            long = long.dropna(subset=["temp"]).sort_values(["year","month"])
-            if long["year"].nunique() >= 6:
-                return long
-    return None
-
-def try_parse_long(df_raw: pd.DataFrame):
-    # [날짜|평균기온] 일데이터 → 월평균 집계
-    for header_row in range(0, min(5, len(df_raw))):
-        hdr = list(df_raw.iloc[header_row])
-        body = df_raw.iloc[header_row+1:].copy(); body.columns = hdr
-
-        date_col = None
-        for c in body.columns:
-            if _clean(c) in ["날짜","date","일자","일시","dt"]:
-                date_col = c; break
-        if date_col is None:
-            for c in body.columns:
-                s = pd.to_datetime(body[c], errors="coerce")
-                if s.notna().sum() >= max(12, int(len(s)*0.3)):
-                    date_col = c; break
-        if date_col is None: 
-            continue
-
-        val_col = None
-        for c in body.columns:
-            norm = _clean(c)
-            if norm.startswith("평균기온") or norm in ["평균기온","기온","temp","temperature"]:
-                val_col = c; break
-        if val_col is None:
-            nums = [c for c in body.columns if c!=date_col and pd.to_numeric(body[c], errors="coerce").notna().sum()>=max(12, int(len(body)*0.3))]
-            if nums: val_col = nums[0]
-        if val_col is None: 
-            continue
-
-        df = body[[date_col, val_col]].copy().rename(columns={date_col:"date", val_col:"temp"})
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        df["temp"] = pd.to_numeric(df["temp"], errors="coerce")
-        df = df.dropna(subset=["date","temp"])
-        df["year"]  = df["date"].dt.year
-        df["month"] = df["date"].dt.month
-        long = (df.groupby(["year","month"], as_index=False)["temp"]
-                  .mean()
-                  .sort_values(["year","month"]))
-        if long["year"].nunique() >= 6:
-            return long
-    return None
-
-@st.cache_data
-def load_excel_any(path_or_buf):
-    xls = pd.ExcelFile(path_or_buf)
-    for sh in xls.sheet_names:
-        raw = pd.read_excel(xls, sheet_name=sh, header=None)
-        parsed = try_parse_wide(raw)
-        if parsed is not None: return parsed, sh, "wide"
-        parsed = try_parse_long(raw)
-        if parsed is not None: return parsed, sh, "long"
-    return None, None, None
-
-# ----------------- 지표 -----------------
-def r2(y, yp):
-    y = np.array(y, dtype=float); yp = np.array(yp, dtype=float)
-    m = ~(np.isnan(y) | np.isnan(yp)); y, yp = y[m], yp[m]
-    if y.size < 2: return np.nan
-    sse = np.sum((y-yp)**2); sst = np.sum((y-y.mean())**2)
-    return float(1 - sse/sst) if sst>0 else np.nan
-
-def mae(y, yp):
-    y = np.array(y, dtype=float); yp = np.array(yp, dtype=float)
-    m = ~(np.isnan(y) | np.isnan(yp)); y, yp = y[m], yp[m]
-    return float(np.mean(np.abs(y-yp))) if y.size>0 else np.nan
-
-# ----------------- 예측 -----------------
-def build_y_true(df, Y:int):
-    y_df = df.query("year == @Y").sort_values("month")
-    return y_df["month"].tolist(), y_df["temp"].to_numpy()
-
-def build_pred_monthly(df, start:int, end:int, months_order:list):
-    train = df.query("year >= @start and year <= @end").copy()
-    preds=[]
-    for m in months_order:
-        x = train.loc[train["month"]==m, "temp"].to_numpy()
-        preds.append(np.mean(x) if x.size>0 else np.nan)
-    return np.array(preds, dtype=float)
-
-def build_pred_annual(df, start:int, end:int, months_order:list):
-    g = df.query("year >= @start and year <= @end").groupby("year")["temp"].mean()
-    if g.size == 0: return np.full(len(months_order), np.nan)
-    scalar = float(g.mean())
-    return np.full(len(months_order), scalar, dtype=float)
-
-# ----------------- 데이터 로딩 -----------------
-default_path = Path("기온_198001_202509.xlsx")
-uploaded = st.file_uploader("기온 파일(.xlsx) — [연도|1..12] 또는 [날짜|평균기온(℃)]", type=["xlsx"])
-df, used_sheet, mode = (load_excel_any(uploaded) if uploaded else
-                        (load_excel_any(default_path) if default_path.exists() else (None,None,None)))
-if df is None:
-    st.error("월별 평균기온을 찾지 못했어. 형식: A)[연도|1..12] 또는 B)[날짜|평균기온(℃)] — 일 데이터는 월 평균으로 자동 집계함.")
-    st.stop()
-
-years = sorted(df["year"].unique())
-min_year, max_year = int(min(years)), int(max(years))
-
-# ================== 탭 ==================
-tab1, tab2 = st.tabs(["단일연도 검증(월별 vs 연평균 비교)", "백테스트 요약"])
-
-# ----------------- 탭1: 단일연도 -----------------
-with tab1:
-    c1, c2, c3 = st.columns([1,1,1])
-    with c1:
-        target_year = st.number_input("대상연도(실제값 존재)", min_value=min_year+1, max_value=max_year, value=max_year)
-    with c2:
-        Lmax = st.slider("비교할 최대 L(년)", 3, 15, 10)
-    with c3:
-        show_table = st.toggle("결과 테이블 표시", value=True)
-
-    st.caption(
-        f"평가 규칙(연속 구간): 대상연도 {target_year}일 때 L=1→[{target_year-1}], "
-        f"L=2→[{target_year-2}~{target_year-1}], … L=k→[Y-k~Y-1]. "
-        "월별 방식은 동월 평균(계절성 유지), 연평균 방식은 L년 연평균의 평균값을 12개월 동일 적용(계절성 제거)."
-    )
-
-    months, y_true = build_y_true(df, target_year)
-
-    rows=[]
-    for L in range(1, Lmax+1):
-        start = target_year - L
-        if start < min_year: continue
-        y_pred_m = build_pred_monthly(df, start, target_year-1, months)
-        y_pred_a = build_pred_annual(df, start, target_year-1, months)
-        rows.append((L, r2(y_true, y_pred_m), mae(y_true, y_pred_m),
-                     r2(y_true, y_pred_a), mae(y_true, y_pred_a)))
-    perf = pd.DataFrame(rows, columns=["L(년)","R2_월별","MAE_월별","R2_연평균","MAE_연평균"]).dropna().sort_values("L(년)")
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=perf["L(년)"], y=perf["R2_월별"],
-        mode="lines+markers+text",
-        text=[f"{v:.4f}" for v in perf["R2_월별"]],
-        textposition="top center", textfont=dict(size=11),
-        name="R²(월별)"
-    ))
-    fig.add_trace(go.Scatter(
-        x=perf["L(년)"], y=perf["R2_연평균"],
-        mode="lines+markers", line=dict(dash="dot"),
-        name="R²(연평균)"
-    ))
-    best_idx = perf["R2_월별"].idxmax()
-    best_L, best_R2 = int(perf.loc[best_idx, "L(년)"]), float(perf.loc[best_idx, "R2_월별"])
-    fig.add_vrect(x0=best_L-0.5, x1=best_L+0.5, fillcolor="#4CAF50", opacity=0.12, line_width=0,
-                  annotation_text=f"최적 L(월별)={best_L}", annotation_position="top left")
-
-    ymin_data = float(min(perf["R2_월별"].min(), perf["R2_연평균"].min()))
-    ymax_data = float(max(perf["R2_월별"].max(), perf["R2_연평균"].max()))
-    ymin = max(0.88, ymin_data - 0.02)
-    ymax = min(1.0,  ymax_data + 0.01)
-    fig.update_yaxes(title="R² (1에 가까울수록 유사)", range=[ymin, ymax], tick0=0.9, dtick=0.02)
-    fig.update_xaxes(title=f"{target_year}년 예측 — ‘직전 L년’ 연속 평균 (월별 vs 연평균)")
-    fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-    tidy_layout(fig, title=f"R² 곡선 비교 — 월별(계절성 유지) vs 연평균(계절성 제거)", height=560)
-
-    st.plotly_chart(fig, use_container_width=True,
-                    config={"scrollZoom": True, "displaylogo": False, "modeBarButtonsToRemove": ["select","lasso2d"]})
-
-    if show_table:
-        table = perf.copy()
-        table["ΔR2(월별-연평균)"] = table["R2_월별"] - table["R2_연평균"]
-        table["비교구간"] = table["L(년)"].apply(lambda L: f"{target_year-L}~{target_year-1}")
-        table = table[["L(년)","비교구간","R2_월별","R2_연평균","ΔR2(월별-연평균)","MAE_월별","MAE_연평균"]]
+# 1. 데이터 로드 (구글 시트 연동 유지)
+@st.cache_data(ttl=600)
+def load_data():
+    sheet_id = "13HrIz6OytYDykXeXzXJ02I6XbaKin1YaKBoO2kBd6Bs"
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
+    df = pd.read_csv(url)
+    
+    if '공급량(M3)' in df.columns:
+        df['공급량(M3)'] = pd.to_numeric(df['공급량(M3)'].astype(str).str.replace(',', ''), errors='coerce')
         
-        # --- 스타일링 함수: 특정 셀에만 색상 적용 ---
-        def highlight_abnormal(val):
-            # val가 '🚨 이상(저온)' 또는 '🚨 이상(고온)'인지 확인하여 스타일 반환
-            if isinstance(val, str):
-                if '이상' in val:
-                    # 간단하게 '이상'이라는 글자가 있으면 무조건 빨간색 배경 적용
-                    # (이 코드는 단일연도 검증 탭용이므로 사실상 이 부분을 탈 일이 없음. 요약표 코드가 따로 없다면 말이다.)
-                    return 'background-color: #ffcccc' 
-            return ''
+    df['일자'] = pd.to_datetime(df['일자'])
+    df['연도'] = df['일자'].dt.year
+    df['월'] = df['일자'].dt.month
+    df['일'] = df['일자'].dt.day
+    return df
 
-        # Styler 객체를 사용하여 데이터프레임 렌더링
-        st.dataframe(table.style.format({
-            "R2_월별":"{:.4f}","R2_연평균":"{:.4f}","ΔR2(월별-연평균)":"{:.4f}",
-            "MAE_월별":"{:.3f}","MAE_연평균":"{:.3f}"}).applymap(highlight_abnormal), use_container_width=True)
+df = load_data()
 
-# ----------------- 탭2: 백테스트 요약 -----------------
-with tab2:
-    colA, colB = st.columns([1,1])
-    with colA:
-        y_from = st.number_input("목표연도 시작", min_value=min_year+1, max_value=max_year-1,
-                                 value=max(min_year+5, max_year-10))
-    with colB:
-        y_to   = st.number_input("목표연도 종료", min_value=y_from, max_value=max_year, value=max_year)
+max_year = int(df['연도'].max())
+target_year = max_year
 
-    # (Y,L) R² 매트릭스 — 연속구간만
-    mat_rows=[]
-    for Y in range(int(y_from), int(y_to)+1):
-        months_Y, y_true_Y = build_y_true(df, Y)
-        for L in range(1, 11):
-            start = Y - L
-            if start < min_year:
-                mat_rows.append((Y,L,np.nan)); continue
-            y_pred = build_pred_monthly(df, start, Y-1, months_Y)
-            mat_rows.append((Y, L, r2(y_true_Y, y_pred)))
-    mat = pd.DataFrame(mat_rows, columns=["Y","L","R2"])
+# 2. 통합 컨트롤 UI
+st.subheader("🗓️ 전체 분석 월 선택")
+selected_month = st.selectbox("", list(range(1, 13)), index=0, format_func=lambda x: f"{x}월")
 
-    # 연도별 최적 L
-    best_per_Y = mat.loc[mat.groupby("Y")["R2"].idxmax()][["Y","L","R2"]].dropna().sort_values("Y")
+st.markdown("---")
 
-    # 도넛(참고용)
-    best_per_Y["구분"] = np.where(best_per_Y["L"]<=3, "최근(1–3년)",
-                           np.where(best_per_Y["L"]==4, "중간(4년)", "장기(5년+)"))
-    dist = (best_per_Y["구분"].value_counts()
-            .reindex(["최근(1–3년)","중간(4년)","장기(5년+)"])
-            .fillna(0).reset_index())
-    dist.columns = ["구분","연도수"]
-    pie = px.pie(dist, names="구분", values="연도수", hole=0.35,
-                 color="구분",
-                 color_discrete_map={"최근(1–3년)":"#1976D2","중간(4년)":"#E53935","장기(5년+)":"#64B5F6"})
-    pie.update_traces(textposition="inside", texttemplate="%{percent:.1%}\n(%{value}개 연도)")
-    tidy_layout(pie, title="연도별 최적 L 분포(월별 방식 기준)", height=360)
-    st.plotly_chart(pie, use_container_width=True)
+monthly_avg = df[df['월'] == selected_month].groupby('연도')['평균기온(℃)'].mean().reset_index()
 
-    # ===== 1–4년 vs 5–8년 KPI/막대 =====
-    cnt_1_4 = int((best_per_Y["L"].between(1, 4)).sum())
-    cnt_5_8 = int((best_per_Y["L"].between(5, 8)).sum())
-    total2  = max(1, cnt_1_4 + cnt_5_8)
-    def pct2(v): return v / total2 * 100.0
+if '공급량(M3)' in df.columns:
+    supply_data = df[df['월'] == selected_month].groupby('연도')['공급량(M3)'].sum().reset_index()
+else:
+    supply_data = pd.DataFrame({'연도': monthly_avg['연도'], '공급량(M3)': 0})
 
-    k1, k2 = st.columns(2)
-    k1.metric("최적 L: 1–4년", f"{cnt_1_4}개 연도", f"{pct2(cnt_1_4):.1f}%")
-    k2.metric("최적 L: 5–8년", f"{cnt_5_8}개 연도", f"{pct2(cnt_5_8):.1f}%")
+def get_supply(yr):
+    val = supply_data[supply_data['연도'] == yr]['공급량(M3)'].values
+    return val[0] if len(val) > 0 and not pd.isna(val[0]) else 0
 
-    range_df2 = pd.DataFrame({"구간": ["1–4년", "5–8년"], "연도수": [cnt_1_4, cnt_5_8]})
-    bar2 = px.bar(range_df2, x="구간", y="연도수", text="연도수")
-    bar2.update_traces(textposition="outside")
-    bar2.update_layout(yaxis_title="연도수", xaxis_title="최적 L 범위")
-    tidy_layout(bar2, title="최적 L 범위별(1–4년 vs 5–8년) 연도수", height=340)
-    st.plotly_chart(bar2, use_container_width=True)
+valid_supplies = [get_supply(y) for y in monthly_avg['연도'] if get_supply(y) > 0]
+max_s, min_s = (max(valid_supplies), min(valid_supplies)) if valid_supplies else (1, 0)
 
-    # ===== (복원) 연도별 최적 L 추이 =====
-    fig_bestL = go.Figure()
-    fig_bestL.add_hrect(y0=0.5, y1=3.5, fillcolor="#E3F2FD", opacity=0.35, line_width=0)  # 최근
-    fig_bestL.add_hrect(y0=3.5, y1=4.5, fillcolor="#FFEBEE", opacity=0.35, line_width=0)  # 중간
-    fig_bestL.add_hrect(y0=4.5, y1=10.5, fillcolor="#E8F5E9", opacity=0.25, line_width=0) # 장기
-    fig_bestL.add_trace(go.Scatter(
-        x=best_per_Y["Y"], y=best_per_Y["L"],
-        mode="lines+markers+text",
-        text=[str(int(v)) for v in best_per_Y["L"]],
-        textposition="top center",
-        name="최적 L"
-    ))
-    fig_bestL.add_hline(y=3, line_dash="dot", line_color="#888")
-    fig_bestL.update_yaxes(title="최적 L(년)", dtick=1, range=[1,10.1])
-    fig_bestL.update_xaxes(title="목표연도 Y")
-    tidy_layout(fig_bestL, title="연도별 최적 L 추이(낮을수록 최근 중심)")
-    st.plotly_chart(fig_bestL, use_container_width=True)
+def scale_size(v):
+    if v == 0 or max_s == min_s: return 15
+    return 15 + ((v - min_s) / (max_s - min_s)) * 35 
 
-    # ===== (복원) 최근(1–3년) 최적 연도 시각화 =====
-    recent_years = best_per_Y.loc[best_per_Y["L"]<=3, "Y"].astype(int).tolist()
-    if recent_years:
-        st.info("최근(1–3년) 최적 연도: **" + ", ".join(map(str, recent_years)) + "**", icon="ℹ️")
-        df_recent_vis = pd.DataFrame({"Y": recent_years, "표시값": 1})
-        fig_strip = go.Figure()
-        fig_strip.add_trace(go.Scatter(
-            x=df_recent_vis["Y"], y=df_recent_vis["표시값"],
-            mode="markers+text",
-            text=df_recent_vis["Y"].astype(str),
-            textposition="top center",
-            marker=dict(size=12, color="#1976D2"),
-            name="최근 최적 연도"
-        ))
-        fig_strip.update_yaxes(visible=False, range=[0.8, 1.2])
-        fig_strip.update_xaxes(title="최근(1–3년) 최적으로 나온 연도", tickmode="linear")
-        tidy_layout(fig_strip, title=f"최근(1–3년) 최적 ‘{len(recent_years)}개 연도’ 시각화", height=240)
-        st.plotly_chart(fig_strip, use_container_width=True)
+# ---------------------------------------------------------
+# 3. 최상단: 월 평균기온 현황 요약 표 (★ 배경 하이라이트 기능 추가)
+# ---------------------------------------------------------
+st.header(f"📋 {selected_month}월 평균기온 현황 요약")
 
-    # ===== 히트맵(연도 제외 기능) =====
-    st.markdown("#### 세부 R² Heatmap — Y×L *(연속 구간)*")
-    all_years_for_heat = sorted(mat["Y"].unique())
-    exclude_years = st.multiselect(
-        "히트맵에서 제외할 연도 선택",
-        options=all_years_for_heat,
-        default=[],
-        help="선택한 연도는 히트맵에서 숨깁니다."
-    )
-    heat_source = mat[~mat["Y"].isin(exclude_years)].copy()
+if target_year in monthly_avg['연도'].values and len(monthly_avg[monthly_avg['연도'] < target_year]) >= 7:
+    past_7_years = monthly_avg[(monthly_avg['연도'] >= target_year - 7) & (monthly_avg['연도'] < target_year)].copy()
+    past_7_years_list = past_7_years['연도'].tolist()
+    
+    curr_val = round(monthly_avg[monthly_avg['연도'] == target_year]['평균기온(℃)'].values[0], 1)
+    mean_7yr = past_7_years['평균기온(℃)'].mean()
+    
+    max_idx = past_7_years['평균기온(℃)'].idxmax()
+    min_idx = past_7_years['평균기온(℃)'].idxmin()
+    past_5_years = past_7_years.drop(index=[max_idx, min_idx])
+    
+    mean_5yr = round(past_5_years['평균기온(℃)'].mean(), 1)
+    std_5yr = np.sqrt(np.sum((past_5_years['평균기온(℃)'] - mean_5yr)**2) / 5)
+    is_abnormal = abs(curr_val - mean_5yr) > std_5yr
 
-    if heat_source["Y"].nunique() == 0:
-        st.warning("모든 연도를 제외했습니다. 일부 연도를 선택 해제하세요.", icon="⚠️")
+    past_7_temps = [round(monthly_avg[monthly_avg['연도'] == yr]['평균기온(℃)'].values[0], 1) for yr in past_7_years_list]
+    max_t, min_t = max(past_7_temps), min(past_7_temps)
+
+    table_data = {'구분': ['월 평균', '판별 요약']}
+    
+    for i, yr in enumerate(past_7_years_list):
+        t = past_7_temps[i]
+        t_str = f"🔺 {t}" if t == max_t else (f"🔻 {t}" if t == min_t else f"{t}")
+        table_data[str(yr)] = [t_str, '']
+
+    table_data['7년 평균'] = [f"{mean_7yr:.1f}", '']
+    table_data[str(target_year)] = [f"{curr_val}", '']
+
+    if len(past_7_years_list) >= 3:
+        table_data[str(past_7_years_list[0])][1] = f"5년 평균 : {mean_5yr:.1f}℃"
+        table_data[str(past_7_years_list[1])][1] = f"표준편차 : {std_5yr:.4f}"
+        table_data[str(past_7_years_list[2])][1] = f"판정결과 : {'🚨 이상' if is_abnormal else '✅ 정상'}"
+
+    df_table = pd.DataFrame(table_data)
+
+    # ★ 데이터프레임 스타일링 함수 (이상고온: 붉은배경, 이상저온: 푸른배경)
+    def apply_highlight(x):
+        df_style = pd.DataFrame('', index=x.index, columns=x.columns)
+        if is_abnormal:
+            # 5년 평균보다 높으면 이상고온(붉은색), 낮으면 이상저온(푸른색)
+            bg_color = '#ffebee' if curr_val > mean_5yr else '#e3f2fd'
+            text_color = '#d32f2f' if curr_val > mean_5yr else '#1976d2'
+            col_idx = df_table.columns.get_loc(str(target_year))
+            # 첫 번째 줄('월 평균')의 당해연도 셀에만 스타일 적용
+            df_style.iloc[0, col_idx] = f'background-color: {bg_color}; color: {text_color}; font-weight: bold;'
+        return df_style
+
+    styled_table = df_table.style.apply(apply_highlight, axis=None)
+    st.dataframe(styled_table, hide_index=True)
+
+    st.markdown("---")
+
+    # ---------------------------------------------------------
+    # 4. 이상기온 판별 상세 (공급량 비례 버블 차트 유지)
+    # ---------------------------------------------------------
+    st.header(f"🚨 {selected_month}월 이상기온 판별 상세 (한국가스공사 기준)")
+    
+    if is_abnormal:
+        st.error(f"🚨 **주의:** {target_year}년 {selected_month}월은 가스공사 기준 **'이상기온'**으로 판별되었습니다! (도시가스 실적 변동에 유의하세요)", icon="🚨")
     else:
-        heat_df = heat_source.pivot(index="Y", columns="L", values="R2").sort_index()
-        fig_hm = px.imshow(
-            heat_df,
-            labels=dict(x="L(년)", y="Y(목표연도)", color="R²"),
-            aspect="auto",
-            color_continuous_scale="Blues",
-            origin="lower"
-        )
-        fig_hm.update_xaxes(side="bottom")
-        tidy_layout(fig_hm, title="세부 R² Heatmap — Y×L (연속 구간, 연도 제외 반영)", height=520)
-        st.plotly_chart(fig_hm, use_container_width=True,
-                        config={"scrollZoom": True, "displaylogo": False})
+        st.success(f"✅ {target_year}년 {selected_month}월은 가스공사 기준 **'정상 기온'** 범위 내에 있습니다.", icon="✅")
+    
+    st.write("")
 
-    st.caption(f"(시트: {used_sheet}, 모드: {mode}, 규칙: ‘직전 L년 연속’만 후보)")
+    m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+    m_col1.metric("최근 7년 평균", f"{mean_7yr:.1f}℃")
+    m_col2.metric("5년 평균 (최대/최소 제외)", f"{mean_5yr:.1f}℃")
+    m_col3.metric("5년 표준편차", f"{std_5yr:.2f}")
+    
+    status_text = "이상기온 발생!" if is_abnormal else "정상 범위"
+    status_color = "inverse" if is_abnormal else "normal"
+    m_col4.metric(f"기준 연도({target_year}) 평균", f"{curr_val:.1f}℃", delta=status_text, delta_color=status_color)
+
+    fig_abnormal = go.Figure()
+    lower_bound = mean_5yr - std_5yr
+    upper_bound = mean_5yr + std_5yr
+
+    fig_abnormal.add_vrect(
+        x0=lower_bound, x1=upper_bound,
+        fillcolor="#00BFFF", opacity=0.1, layer="below", 
+        line_width=1, line_dash="solid", line_color="#00BFFF",
+    )
+    
+    fig_abnormal.add_annotation(x=lower_bound, y=0.9, text=f"<b>하한: {lower_bound:.2f}℃</b>", showarrow=False, font=dict(color="#00BFFF", size=13), xanchor="right", yanchor="top")
+    fig_abnormal.add_annotation(x=upper_bound, y=0.9, text=f"<b>상한: {upper_bound:.2f}℃</b>", showarrow=False, font=dict(color="#00BFFF", size=13), xanchor="left", yanchor="top")
+    
+    fig_abnormal.add_vline(x=mean_5yr, line=dict(color="#2ca02c", width=2, dash="dash"), annotation_text=f"5년 평균 ({mean_5yr:.1f}℃)", annotation_position="bottom right", annotation_font=dict(color="#2ca02c"))
+
+    sizes_7yr, texts_7yr, x_vals = [], [], []
+    for _, row in past_7_years.iterrows():
+        y = int(row['연도'])
+        if y == target_year - 1: continue 
+        s = get_supply(y)
+        sizes_7yr.append(scale_size(s))
+        texts_7yr.append(f"<b>{y}년</b><br>평균기온: {row['평균기온(℃)']:.1f}℃<br>공급량: {s:,.0f} M3")
+        x_vals.append(row['평균기온(℃)'])
+
+    fig_abnormal.add_trace(go.Scatter(
+        x=x_vals, y=[0]*len(x_vals), mode="markers", name="과거 7년",
+        marker=dict(size=sizes_7yr, color="rgba(128, 128, 128, 0.5)", line=dict(color="gray", width=1)),
+        hoverinfo="text", text=texts_7yr
+    ))
+
+    y1_year = target_year - 1
+    if y1_year in past_7_years['연도'].values:
+        y1_val = past_7_years[past_7_years['연도'] == y1_year]['평균기온(℃)'].values[0]
+        y1_s = get_supply(y1_year)
+        fig_abnormal.add_trace(go.Scatter(
+            x=[y1_val], y=[0], mode="markers+text", name=f"작년({y1_year}년)",
+            marker=dict(size=scale_size(y1_s), color="#9467bd", symbol="diamond", line=dict(color="white", width=2)),
+            text=[f"<b>{y1_year}년 ({y1_val:.1f}℃)</b>"], textposition="top center", textfont=dict(size=13, color="#9467bd"),
+            hoverinfo="text", hovertext=f"<b>{y1_year}년</b><br>평균기온: {y1_val:.1f}℃<br>공급량: {y1_s:,.0f} M3"
+        ))
+
+    curr_s = get_supply(target_year)
+    fig_abnormal.add_trace(go.Scatter(
+        x=[curr_val], y=[0], mode="markers+text", name=f"{target_year}년",
+        marker=dict(size=scale_size(curr_s), color="#FF8C00", symbol="circle", line=dict(color="white", width=2)),
+        text=[f"<b>{target_year}년 ({curr_val}℃)</b>"], textposition="bottom center", textfont=dict(size=15, color="#FF8C00"),
+        hoverinfo="text", hovertext=f"<b>{target_year}년</b><br>평균기온: {curr_val:.1f}℃<br>공급량: {curr_s:,.0f} M3"
+    ))
+    
+    fig_abnormal.update_layout(
+        height=320, 
+        yaxis=dict(showticklabels=False, range=[-1.3, 1.3], showgrid=False, zeroline=False), 
+        xaxis=dict(title="평균기온(℃)", gridcolor="#f0f0f0", showline=True, linecolor='lightgray'),
+        showlegend=False, margin=dict(l=40, r=40, t=20, b=40), plot_bgcolor="white"
+    )
+    st.plotly_chart(fig_abnormal, use_container_width=True)
+
+else:
+    st.info("데이터가 충분하지 않습니다.")
+
+st.markdown("---")
+
+# ---------------------------------------------------------
+# 5. 일별 평균기온 매트릭스 (31일 및 평균 누락 강제 방지 유지)
+# ---------------------------------------------------------
+st.header("📊 상세 일별 기온 매트릭스")
+
+min_year_val = int(df['연도'].min())
+selected_years = st.slider("기온 매트릭스 연도 범위 설정", min_year_val, max_year, (min_year_val, max_year))
+
+filtered_df = df[(df['월'] == selected_month) & 
+                 (df['연도'] >= selected_years[0]) & 
+                 (df['연도'] <= selected_years[1])]
+
+pivot_df = filtered_df.pivot(index='일', columns='연도', values='평균기온(℃)')
+pivot_df = pivot_df.reindex(list(range(1, 32)))
+
+avg_series = filtered_df.groupby('연도')['평균기온(℃)'].mean()
+pivot_df.loc['평균'] = avg_series 
+
+pivot_df.index = pivot_df.index.astype(str)
+pivot_df.columns = pivot_df.columns.astype(str)
+
+fig_heatmap = px.imshow(
+    pivot_df,
+    labels=dict(x="연도", y="일", color="평균기온(℃)"),
+    x=pivot_df.columns,
+    y=pivot_df.index,
+    color_continuous_scale='RdBu_r',
+    aspect="auto",
+    text_auto='.1f'  
+)
+
+fig_heatmap.update_layout(
+    height=1000, 
+    margin=dict(l=40, r=40, t=80, b=40),
+    yaxis=dict(
+        type='category',
+        tickmode='linear',
+        dtick=1,
+        autorange='reversed'
+    ),
+    xaxis=dict(
+        type='category', 
+        tickmode='linear', 
+        dtick=1, 
+        side='top'
+    )
+)
+fig_heatmap.update_traces(textfont=dict(size=14))
+
+st.plotly_chart(fig_heatmap, use_container_width=True)
