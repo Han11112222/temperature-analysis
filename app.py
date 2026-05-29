@@ -55,7 +55,7 @@ def scale_size(v):
     return 15 + ((v - min_s) / (max_s - min_s)) * 35 
 
 # ---------------------------------------------------------
-# 3. 최상단: 월 평균기온 현황 요약 표 (전체화면 및 이상기온 배경색 정교화)
+# 3. 최상단: 월 평균기온 현황 요약 표
 # ---------------------------------------------------------
 st.header(f"📋 {selected_month}월 평균기온 현황 요약")
 
@@ -110,7 +110,6 @@ if target_year in monthly_avg['연도'].values and len(monthly_avg[monthly_avg['
             try:
                 val = float(str(val_str).split()[0])
                 
-                # ★ 진짜 이상기온(표준편차 범위 이탈)일 때만 배경색 적용
                 is_anomaly_val = abs(val - mean_5yr) > std_5yr
                 bg_color = '#ffebee' if (is_anomaly_val and val > mean_5yr) else ('#e3f2fd' if (is_anomaly_val and val < mean_5yr) else '')
                 
@@ -144,7 +143,6 @@ if target_year in monthly_avg['연도'].values and len(monthly_avg[monthly_avg['
         return df_style
 
     styled_table = df_table.style.apply(apply_highlight, axis=None)
-    # ★ 상단 표 전체화면(use_container_width=True) 적용
     st.dataframe(styled_table, hide_index=True, use_container_width=True)
 
     st.caption("※ **이상기온 판단 기준**: 과거 7년 중 최고·최저 기온을 제외한 5년 평균 기온과의 차이 절대값이 5년 표준편차보다 큰 경우")
@@ -286,7 +284,7 @@ fig_heatmap.update_traces(textfont=dict(size=14))
 st.plotly_chart(fig_heatmap, use_container_width=True)
 
 # =====================================================================
-# 6. 추가된 기능: 통합 시나리오 예측 매트릭스 (이상기온 하이라이트 일치화)
+# 6. 추가된 기능: 통합 시나리오 예측 매트릭스 (높이 고정 및 항목 단순화)
 # =====================================================================
 st.markdown("---")
 
@@ -311,24 +309,34 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
             
     pivot_10yr = pivot_all.loc[recent_10_years].copy().sort_index()
     
-    # 2. 모든 월(1~12월)에 대해 시나리오 예측 계산 수행 (항목명 3번 수정)
+    # 2. 모든 월(1~12월)에 대해 시나리오 예측 계산 수행
     pred_data = {
         '[예측] ① 3년 평균': [''] * 12,
         '[예측] ② 이상기온 제외': [''] * 12,
-        '[예측] ③ Max / Min / 이상제외평균': [''] * 12,
+        '[예측] ③ Max/Min 제외 평균': [''] * 12,
         '[예측] ④ 선형추세': [''] * 12
     }
     
     for m in range(1, 13):
         hist_data = pivot_all.loc[start_year:target_year-1, m].dropna()
         if len(hist_data) >= 3:
+            # 1) 3년 평균
             mean_3y = hist_data.iloc[-3:].mean()
-            max_val = hist_data.max()
-            min_val = hist_data.min()
             
+            # 2) 이상기온 제외 평균 (표준편차 기준 실제 이상기온 걸러내기)
+            mean_val_10y = hist_data.mean()
+            std_val_10y = hist_data.std(ddof=0)
+            if std_val_10y > 0:
+                hist_normal = hist_data[abs(hist_data - mean_val_10y) <= std_val_10y]
+                mean_normal = hist_normal.mean() if len(hist_normal) > 0 else mean_val_10y
+            else:
+                mean_normal = mean_val_10y
+
+            # 3) Max/Min 제외 평균 (단순 최고, 최저 1개씩 드랍)
             hist_ex_abnormal = hist_data[~hist_data.index.isin([hist_data.idxmax(), hist_data.idxmin()])]
-            mean_ex_abnormal = hist_ex_abnormal.mean() if len(hist_ex_abnormal) > 0 else hist_data.mean()
+            mean_ex_maxmin = hist_ex_abnormal.mean() if len(hist_ex_abnormal) > 0 else hist_data.mean()
             
+            # 4) 선형추세
             x = hist_data.index.values
             y = hist_data.values
             z = np.polyfit(x, y, 1)
@@ -336,9 +344,9 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
             trend_val = p(target_year)
             
             pred_data['[예측] ① 3년 평균'][m-1] = f"{mean_3y:.1f}"
-            pred_data['[예측] ② 이상기온 제외'][m-1] = f"{mean_ex_abnormal:.1f}"
-            # ★ 3번 시나리오에 Max, Min, 산술평균 모두 출력되도록 수정
-            pred_data['[예측] ③ Max / Min / 이상제외평균'][m-1] = f"{max_val:.1f} / {min_val:.1f} / {mean_ex_abnormal:.1f}"
+            pred_data['[예측] ② 이상기온 제외'][m-1] = f"{mean_normal:.1f}"
+            # ★ 단일 평균값만 출력되도록 수정
+            pred_data['[예측] ③ Max/Min 제외 평균'][m-1] = f"{mean_ex_maxmin:.1f}"
             pred_data['[예측] ④ 선형추세'][m-1] = f"{trend_val:.1f}"
     
     pred_df = pd.DataFrame(pred_data).T
@@ -349,11 +357,9 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
     combined_df = combined_df.reset_index()
     combined_df.rename(columns={'index': '구분'}, inplace=True)
 
-    # ★ 데이터프레임 스타일링 함수: 상단 표와 동일한 '이상기온' 판별 기준 적용
     def apply_matrix_style(df_input):
         style_df = pd.DataFrame('', index=df_input.index, columns=df_input.columns)
         
-        # 구분 열 및 하단 예측 행 스타일 지정
         for idx in df_input.index:
             gubun_val = str(df_input.loc[idx, '구분'])
             if '[예측]' in gubun_val:
@@ -362,11 +368,9 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
             else:
                 style_df.loc[idx, '구분'] = 'text-align: left; font-weight: bold; white-space: nowrap;'
                 
-        # 월별 1~12열 과거 실적에 대한 '이상기온' 색상 판별
         hist_indices = list(range(len(recent_10_years)))
         
         for m in range(1, 13):
-            # 과거 10년 치 데이터만 추출
             hist_series = pd.to_numeric(df_input.loc[hist_indices, m], errors='coerce').dropna()
             
             mean_val, std_val = 0, 0
@@ -377,12 +381,10 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
                 
                 if len(ex_series) > 0:
                     mean_val = ex_series.mean()
-                    # 상단 표와 완벽히 동일한 방식의 표준편차 계산
                     std_val = np.sqrt(np.sum((ex_series - mean_val)**2) / len(ex_series))
                 else:
                     mean_val = hist_series.mean()
             
-            # 각 행의 기온이 진짜 이상기온인지 검사 후 배경색 칠하기
             for idx in hist_indices:
                 val = df_input.loc[idx, m]
                 if pd.notna(val) and val != "":
@@ -390,9 +392,9 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
                         val_f = float(val)
                         if std_val > 0 and abs(val_f - mean_val) > std_val:
                             if val_f > mean_val:
-                                style_df.loc[idx, m] = 'background-color: #ffebee; color: black; text-align: center;' # 이상고온(Red)
+                                style_df.loc[idx, m] = 'background-color: #ffebee; color: black; text-align: center;'
                             else:
-                                style_df.loc[idx, m] = 'background-color: #e3f2fd; color: black; text-align: center;' # 이상저온(Blue)
+                                style_df.loc[idx, m] = 'background-color: #e3f2fd; color: black; text-align: center;'
                         else:
                             style_df.loc[idx, m] = 'text-align: center;'
                     except ValueError:
@@ -402,14 +404,13 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
                     
         return style_df
 
-    # 숫자 포맷팅 (빈칸은 빈칸으로)
     def custom_format(x):
         if pd.isna(x) or x == "": return ""
         if isinstance(x, (int, float)): return f"{x:.1f}"
         return str(x)
 
-    # 스타일 적용 및 렌더링
     styled_pivot = combined_df.style.format(custom_format, subset=list(range(1, 13))) \
                                     .apply(apply_matrix_style, axis=None)
                                
-    st.dataframe(styled_pivot, use_container_width=True, hide_index=True)
+    # ★ 핵심 수정: height 파라미터를 넉넉하게 600픽셀로 주어 내부 스크롤바 원천 차단
+    st.dataframe(styled_pivot, use_container_width=True, hide_index=True, height=600)
