@@ -310,13 +310,19 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
     
     st.subheader("📊 최근 10년 연도별/월별 평균기온 매트릭스")
     
-    # matplotlib 에러 방지를 위한 예외 처리 구문 적용
+    # ★ 수정된 부분: matplotlib 모듈 존재 여부를 확실하게 선 검사
+    has_matplotlib = False
     try:
+        import matplotlib
+        has_matplotlib = True
+    except ImportError:
+        pass
+        
+    if has_matplotlib:
         styled_pivot = pivot_10yr.style.format("{:.1f}", na_rep="") \
                                        .background_gradient(cmap='RdYlBu_r', axis=None) \
                                        .set_properties(**{'text-align': 'center'})
-    except ImportError:
-        # matplotlib이 설치되어 있지 않은 경우 색상 없이 텍스트로만 렌더링
+    else:
         styled_pivot = pivot_10yr.style.format("{:.1f}", na_rep="") \
                                        .set_properties(**{'text-align': 'center'})
     
