@@ -282,14 +282,14 @@ fig_heatmap.update_traces(textfont=dict(size=14))
 st.plotly_chart(fig_heatmap, use_container_width=True)
 
 # =====================================================================
-# 6. 추가된 기능: 통합 시나리오 예측 매트릭스 (표 하단 병합)
+# 6. 추가된 기능: 통합 시나리오 예측 매트릭스 (글자 잘림 방지 및 모든 월 적용)
 # =====================================================================
 st.markdown("---")
 
 if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"):
     st.header("🔮 연도별 월별 평균기온 및 시나리오 예측 매트릭스")
     
-    # 전체 10년 치 기본 데이터 구성
+    # 1. 전체 10년 치 기본 데이터 구성
     monthly_all = df.groupby(['연도', '월'])['평균기온(℃)'].mean().reset_index()
     pivot_all = monthly_all.pivot(index='연도', columns='월', values='평균기온(℃)')
     
@@ -307,10 +307,7 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
             
     pivot_10yr = pivot_all.loc[recent_10_years].copy().sort_index()
     
-    # 2. 미실적 월 시나리오 예측 계산을 위한 딕셔너리 생성
-    target_year_data = pivot_10yr.loc[target_year]
-    missing_months = target_year_data[target_year_data.isna()].index.tolist()
-    
+    # 2. 모든 월(1~12월)에 대해 시나리오 예측 계산 수행 (공란 없애기)
     pred_data = {
         '[예측] ① 3년 평균': [''] * 12,
         '[예측] ② 이상기온 제외': [''] * 12,
@@ -318,7 +315,8 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
         '[예측] ④ 선형추세': [''] * 12
     }
     
-    for m in missing_months:
+    for m in range(1, 13):
+        # 예측의 기준은 해당 월의 과거 10년(target_year 미만) 데이터
         hist_data = pivot_all.loc[start_year:target_year-1, m].dropna()
         if len(hist_data) >= 3:
             mean_3y = hist_data.iloc[-3:].mean()
@@ -334,22 +332,20 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
             p = np.poly1d(z)
             trend_val = p(target_year)
             
-            # 리스트 인덱스는 0부터 시작하므로 m-1
             pred_data['[예측] ① 3년 평균'][m-1] = f"{mean_3y:.1f}"
             pred_data['[예측] ② 이상기온 제외'][m-1] = f"{mean_ex_abnormal:.1f}"
             pred_data['[예측] ③ Max / Min'][m-1] = f"{max_val:.1f} / {min_val:.1f}"
             pred_data['[예측] ④ 선형추세'][m-1] = f"{trend_val:.1f}"
     
-    # 예측 데이터를 데이터프레임으로 변환 후 컬럼 1~12 맞추기
     pred_df = pd.DataFrame(pred_data).T
     pred_df.columns = list(range(1, 13))
     
-    # 기존 10년 치 표 아래에 예측 행 추가 (실적 없는 월이 있을 경우에만 병합)
-    if missing_months:
-        combined_df = pd.concat([pivot_10yr, pred_df])
-    else:
-        combined_df = pivot_10yr
-        st.info(f"✅ {target_year}년의 모든 월 데이터가 입력되어 있어 시나리오 예측이 비활성화되었습니다.")
+    # 데이터 병합
+    combined_df = pd.concat([pivot_10yr, pred_df])
+    
+    # ★ 핵심 수정 1: 인덱스를 '구분'이라는 일반 열(Column)로 변환하여 글자 잘림 방지
+    combined_df = combined_df.reset_index()
+    combined_df.rename(columns={'index': '구분'}, inplace=True)
 
     # 표 렌더링 스타일링
     has_matplotlib = False
@@ -359,7 +355,7 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
     except ImportError:
         pass
 
-    # 값 포맷팅 함수: 숫자는 소수점 1자리, 빈값이나 문자열은 그대로 반환
+    # 값 포맷팅 함수
     def custom_format(x):
         if pd.isna(x) or x == "":
             return ""
@@ -367,22 +363,27 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
             return f"{x:.1f}"
         return str(x)
 
-    styled_pivot = combined_df.style.format(custom_format)
+    # 1~12월 컬럼에만 숫자 포맷 적용
+    styled_pivot = combined_df.style.format(custom_format, subset=list(range(1, 13)))
 
-    # gradient는 위쪽의 실제 숫자 데이터(과거 10년 치)에만 안전하게 적용
+    # gradient는 과거 10년 치 숫자 행(최상단부터 recent_10_years 개수만큼)에만 적용
     if has_matplotlib:
+        year_rows_idx = combined_df.index[:len(recent_10_years)]
         styled_pivot = styled_pivot.background_gradient(
             cmap='RdYlBu_r', 
-            subset=(recent_10_years, combined_df.columns)
+            subset=(year_rows_idx, list(range(1, 13)))
         )
         
-    # 하단에 추가된 예측 행(문자열)의 배경색을 연한 회색으로 칠해 구분감 부여
-    def highlight_pred_rows(s):
-        if s.name in pred_data.keys():
-            return ['background-color: #f8f9fa; font-weight: bold; color: #444444'] * len(s)
-        return [''] * len(s)
+    # 하단 예측 행의 배경색 칠하기 로직 수정 (이제 '구분' 열의 텍스트로 판별)
+    def highlight_pred_rows(row):
+        if '[예측]' in str(row['구분']):
+            return ['background-color: #f8f9fa; font-weight: bold; color: #444444'] * len(row)
+        return [''] * len(row)
         
+    # '구분' 열은 좌측 정렬 및 줄바꿈 방지 적용, 나머지 열은 중앙 정렬
     styled_pivot = styled_pivot.apply(highlight_pred_rows, axis=1) \
-                               .set_properties(**{'text-align': 'center'})
+                               .set_properties(**{'text-align': 'center'}, subset=list(range(1, 13))) \
+                               .set_properties(**{'text-align': 'left', 'font-weight': 'bold', 'white-space': 'nowrap'}, subset=['구분'])
                                
-    st.dataframe(styled_pivot, use_container_width=True)
+    # ★ 핵심 수정 2: hide_index=True를 통해 기본 정수 인덱스 숨기기
+    st.dataframe(styled_pivot, use_container_width=True, hide_index=True)
