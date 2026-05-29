@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
+import io
 
 # 페이지 기본 설정
 st.set_page_config(page_title="기온 분석 및 이상기온 대시보드", layout="wide")
@@ -284,7 +285,7 @@ fig_heatmap.update_traces(textfont=dict(size=14))
 st.plotly_chart(fig_heatmap, use_container_width=True)
 
 # =====================================================================
-# 6. 추가된 기능: 통합 시나리오 예측 매트릭스 (높이 고정 및 항목 단순화)
+# 6. 추가된 기능: 통합 시나리오 예측 매트릭스 및 엑셀 다운로드
 # =====================================================================
 st.markdown("---")
 
@@ -320,10 +321,8 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
     for m in range(1, 13):
         hist_data = pivot_all.loc[start_year:target_year-1, m].dropna()
         if len(hist_data) >= 3:
-            # 1) 3년 평균
             mean_3y = hist_data.iloc[-3:].mean()
             
-            # 2) 이상기온 제외 평균 (표준편차 기준 실제 이상기온 걸러내기)
             mean_val_10y = hist_data.mean()
             std_val_10y = hist_data.std(ddof=0)
             if std_val_10y > 0:
@@ -332,11 +331,9 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
             else:
                 mean_normal = mean_val_10y
 
-            # 3) Max/Min 제외 평균 (단순 최고, 최저 1개씩 드랍)
             hist_ex_abnormal = hist_data[~hist_data.index.isin([hist_data.idxmax(), hist_data.idxmin()])]
             mean_ex_maxmin = hist_ex_abnormal.mean() if len(hist_ex_abnormal) > 0 else hist_data.mean()
             
-            # 4) 선형추세
             x = hist_data.index.values
             y = hist_data.values
             z = np.polyfit(x, y, 1)
@@ -345,7 +342,6 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
             
             pred_data['[예측] ① 3년 평균'][m-1] = f"{mean_3y:.1f}"
             pred_data['[예측] ② 이상기온 제외'][m-1] = f"{mean_normal:.1f}"
-            # ★ 단일 평균값만 출력되도록 수정
             pred_data['[예측] ③ Max/Min 제외 평균'][m-1] = f"{mean_ex_maxmin:.1f}"
             pred_data['[예측] ④ 선형추세'][m-1] = f"{trend_val:.1f}"
     
@@ -412,5 +408,31 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
     styled_pivot = combined_df.style.format(custom_format, subset=list(range(1, 13))) \
                                     .apply(apply_matrix_style, axis=None)
                                
-    # ★ 핵심 수정: height 파라미터를 넉넉하게 600픽셀로 주어 내부 스크롤바 원천 차단
     st.dataframe(styled_pivot, use_container_width=True, hide_index=True, height=600)
+
+    st.write("") # 버튼 위 여백 확보
+    
+    # ---------------------------------------------------------
+    # ★ 추가된 기능: 엑셀 파일 다운로드
+    # ---------------------------------------------------------
+    try:
+        # openpyxl 엔진을 활용해 정식 .xlsx 포맷으로 변환 시도
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            combined_df.to_excel(writer, index=False, sheet_name='기온예측매트릭스')
+            
+        st.download_button(
+            label="📥 엑셀 파일 다운로드 (.xlsx)",
+            data=buffer.getvalue(),
+            file_name=f"{target_year}년_기온예측_시나리오.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    except ImportError:
+        # 클라우드에 openpyxl 모듈이 없을 경우, 엑셀에서 한글이 깨지지 않는 utf-8-sig CSV 포맷으로 우회 제공
+        csv_data = combined_df.to_csv(index=False, encoding='utf-8-sig')
+        st.download_button(
+            label="📥 엑셀(CSV) 파일 다운로드",
+            data=csv_data,
+            file_name=f"{target_year}년_기온예측_시나리오.csv",
+            mime="text/csv"
+        )
