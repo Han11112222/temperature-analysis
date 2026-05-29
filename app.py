@@ -239,7 +239,6 @@ fig_abnormal.update_layout(
 )
 st.plotly_chart(fig_abnormal, use_container_width=True)
 
-
 st.markdown("---")
 
 # ---------------------------------------------------------
@@ -292,3 +291,86 @@ fig_heatmap.update_layout(
 fig_heatmap.update_traces(textfont=dict(size=14))
 
 st.plotly_chart(fig_heatmap, use_container_width=True)
+
+# =====================================================================
+# 6. 추가된 기능: 10년치 평균기온 매트릭스 및 미실적 월 예측
+# =====================================================================
+st.markdown("---")
+
+# 하단 '평균기온' 활성화 토글 버튼
+if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"):
+    st.header("🔮 연도별 월별 평균기온 및 예측 시뮬레이션")
+    
+    # 1. 10년치 연도별 월별 평균기온 박스 생성
+    # 전체 월별 평균기온 계산 및 피벗 테이블 생성
+    monthly_all = df.groupby(['연도', '월'])['평균기온(℃)'].mean().reset_index()
+    pivot_all = monthly_all.pivot(index='연도', columns='월', values='평균기온(℃)')
+    
+    # 1~12월 컬럼이 모두 존재하도록 보장
+    for m in range(1, 13):
+        if m not in pivot_all.columns:
+            pivot_all[m] = np.nan
+    pivot_all = pivot_all[list(range(1, 13))]
+    
+    # 최근 10년 범위 설정
+    start_year = target_year - 9
+    recent_10_years = list(range(start_year, target_year + 1))
+    
+    # 데이터가 없는 연도에 빈 행 추가
+    for y in recent_10_years:
+        if y not in pivot_all.index:
+            pivot_all.loc[y] = [np.nan] * 12
+            
+    # 최근 10년 데이터만 추출 후 정렬
+    pivot_10yr = pivot_all.loc[recent_10_years].copy().sort_index()
+    
+    st.subheader("📊 최근 10년 연도별/월별 평균기온 매트릭스")
+    # 사진과 유사하게 배경에 색상이 들어간 형태로 스타일링 적용 (결측치는 빈칸 표시)
+    styled_pivot = pivot_10yr.style.format("{:.1f}", na_rep="") \
+                                   .background_gradient(cmap='RdYlBu_r', axis=None) \
+                                   .set_properties(**{'text-align': 'center'})
+    
+    st.dataframe(styled_pivot, use_container_width=True)
+    
+    # 2. 당해연도(target_year) 기온(실적이 없는 월) 예측
+    st.subheader(f"💡 {target_year}년 미실적 월 평균기온 예측 (4가지 시나리오)")
+    
+    # target_year 기준 실적이 없는(결측치인) 월 찾기
+    target_year_data = pivot_10yr.loc[target_year]
+    missing_months = target_year_data[target_year_data.isna()].index.tolist()
+    
+    if missing_months:
+        for m in missing_months:
+            with st.expander(f"📌 {target_year}년 {m}월 기온 예측 상세", expanded=True):
+                # 과거 10년 중 당해 연도를 제외한 해당 월의 실적 데이터 추출
+                hist_data = pivot_all.loc[start_year:target_year-1, m].dropna()
+                
+                if len(hist_data) >= 3:
+                    # 1) 3y평균 (최근 3년 단순 산술 평균)
+                    mean_3y = hist_data.iloc[-3:].mean()
+                    
+                    # 2 & 3) 이상기온(최고/최저) 제외 산술 평균, Max, Min
+                    max_val = hist_data.max()
+                    min_val = hist_data.min()
+                    
+                    # 최고치와 최저치를 제외한 나머지 데이터
+                    hist_ex_abnormal = hist_data[~hist_data.index.isin([hist_data.idxmax(), hist_data.idxmin()])]
+                    mean_ex_abnormal = hist_ex_abnormal.mean() if len(hist_ex_abnormal) > 0 else hist_data.mean()
+                    
+                    # 4) 선형추세를 이용한 평균기온 (1차 다항식 회귀)
+                    x = hist_data.index.values
+                    y = hist_data.values
+                    z = np.polyfit(x, y, 1)
+                    p = np.poly1d(z)
+                    trend_val = p(target_year)
+                    
+                    # 4분할 화면으로 깔끔하게 지표 표시
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("① 3년 평균 (산술)", f"{mean_3y:.1f}℃")
+                    c2.metric("② 10년 이상기온 제외 평균", f"{mean_ex_abnormal:.1f}℃", help="과거 데이터 중 Max, Min 1개씩 제외")
+                    c3.metric("③ 10년 Max / Min", f"{max_val:.1f}℃ / {min_val:.1f}℃")
+                    c4.metric("④ 선형추세 예측기온", f"{trend_val:.1f}℃", help=f"과거 {len(hist_data)}년 추세 반영")
+                else:
+                    st.warning(f"{m}월의 과거 데이터가 부족하여 예측 모델을 돌릴 수 없습니다.")
+    else:
+        st.info(f"✅ {target_year}년의 모든 월 데이터가 이미 업데이트되어 있어 미실적 월이 없습니다.")
