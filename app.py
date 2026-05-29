@@ -282,15 +282,14 @@ fig_heatmap.update_traces(textfont=dict(size=14))
 st.plotly_chart(fig_heatmap, use_container_width=True)
 
 # =====================================================================
-# 6. 추가된 기능: 10년치 평균기온 매트릭스 및 미실적 월 예측
+# 6. 추가된 기능: 통합 시나리오 예측 매트릭스 (표 하단 병합)
 # =====================================================================
 st.markdown("---")
 
-# 하단 '평균기온' 활성화 토글 버튼
 if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"):
-    st.header("🔮 연도별 월별 평균기온 및 예측 시뮬레이션")
+    st.header("🔮 연도별 월별 평균기온 및 시나리오 예측 매트릭스")
     
-    # 1. 10년치 연도별 월별 평균기온 박스 생성
+    # 전체 10년 치 기본 데이터 구성
     monthly_all = df.groupby(['연도', '월'])['평균기온(℃)'].mean().reset_index()
     pivot_all = monthly_all.pivot(index='연도', columns='월', values='평균기온(℃)')
     
@@ -308,57 +307,82 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
             
     pivot_10yr = pivot_all.loc[recent_10_years].copy().sort_index()
     
-    st.subheader("📊 최근 10년 연도별/월별 평균기온 매트릭스")
+    # 2. 미실적 월 시나리오 예측 계산을 위한 딕셔너리 생성
+    target_year_data = pivot_10yr.loc[target_year]
+    missing_months = target_year_data[target_year_data.isna()].index.tolist()
     
-    # ★ 수정된 부분: matplotlib 모듈 존재 여부를 확실하게 선 검사
+    pred_data = {
+        '[예측] ① 3년 평균': [''] * 12,
+        '[예측] ② 이상기온 제외': [''] * 12,
+        '[예측] ③ Max / Min': [''] * 12,
+        '[예측] ④ 선형추세': [''] * 12
+    }
+    
+    for m in missing_months:
+        hist_data = pivot_all.loc[start_year:target_year-1, m].dropna()
+        if len(hist_data) >= 3:
+            mean_3y = hist_data.iloc[-3:].mean()
+            max_val = hist_data.max()
+            min_val = hist_data.min()
+            
+            hist_ex_abnormal = hist_data[~hist_data.index.isin([hist_data.idxmax(), hist_data.idxmin()])]
+            mean_ex_abnormal = hist_ex_abnormal.mean() if len(hist_ex_abnormal) > 0 else hist_data.mean()
+            
+            x = hist_data.index.values
+            y = hist_data.values
+            z = np.polyfit(x, y, 1)
+            p = np.poly1d(z)
+            trend_val = p(target_year)
+            
+            # 리스트 인덱스는 0부터 시작하므로 m-1
+            pred_data['[예측] ① 3년 평균'][m-1] = f"{mean_3y:.1f}"
+            pred_data['[예측] ② 이상기온 제외'][m-1] = f"{mean_ex_abnormal:.1f}"
+            pred_data['[예측] ③ Max / Min'][m-1] = f"{max_val:.1f} / {min_val:.1f}"
+            pred_data['[예측] ④ 선형추세'][m-1] = f"{trend_val:.1f}"
+    
+    # 예측 데이터를 데이터프레임으로 변환 후 컬럼 1~12 맞추기
+    pred_df = pd.DataFrame(pred_data).T
+    pred_df.columns = list(range(1, 13))
+    
+    # 기존 10년 치 표 아래에 예측 행 추가 (실적 없는 월이 있을 경우에만 병합)
+    if missing_months:
+        combined_df = pd.concat([pivot_10yr, pred_df])
+    else:
+        combined_df = pivot_10yr
+        st.info(f"✅ {target_year}년의 모든 월 데이터가 입력되어 있어 시나리오 예측이 비활성화되었습니다.")
+
+    # 표 렌더링 스타일링
     has_matplotlib = False
     try:
         import matplotlib
         has_matplotlib = True
     except ImportError:
         pass
-        
+
+    # 값 포맷팅 함수: 숫자는 소수점 1자리, 빈값이나 문자열은 그대로 반환
+    def custom_format(x):
+        if pd.isna(x) or x == "":
+            return ""
+        if isinstance(x, (int, float)):
+            return f"{x:.1f}"
+        return str(x)
+
+    styled_pivot = combined_df.style.format(custom_format)
+
+    # gradient는 위쪽의 실제 숫자 데이터(과거 10년 치)에만 안전하게 적용
     if has_matplotlib:
-        styled_pivot = pivot_10yr.style.format("{:.1f}", na_rep="") \
-                                       .background_gradient(cmap='RdYlBu_r', axis=None) \
-                                       .set_properties(**{'text-align': 'center'})
-    else:
-        styled_pivot = pivot_10yr.style.format("{:.1f}", na_rep="") \
-                                       .set_properties(**{'text-align': 'center'})
-    
+        styled_pivot = styled_pivot.background_gradient(
+            cmap='RdYlBu_r', 
+            subset=(recent_10_years, combined_df.columns)
+        )
+        
+    # 하단에 추가된 예측 행(문자열)의 배경색을 연한 회색으로 칠해 구분감 부여
+    def highlight_pred_rows(s):
+        if s.name in pred_data.keys():
+            return ['background-color: #f8f9fa; font-weight: bold; color: #444444'] * len(s)
+        return [''] * len(s)
+        
+    styled_pivot = styled_pivot.apply(highlight_pred_rows, axis=1) \
+                               .set_properties(**{'text-align': 'center'})
+                               
     st.dataframe(styled_pivot, use_container_width=True)
-    
-    # 2. 당해연도(target_year) 기온(실적이 없는 월) 예측
-    st.subheader(f"💡 {target_year}년 미실적 월 평균기온 예측 (4가지 시나리오)")
-    
-    target_year_data = pivot_10yr.loc[target_year]
-    missing_months = target_year_data[target_year_data.isna()].index.tolist()
-    
-    if missing_months:
-        for m in missing_months:
-            with st.expander(f"📌 {target_year}년 {m}월 기온 예측 상세", expanded=True):
-                hist_data = pivot_all.loc[start_year:target_year-1, m].dropna()
-                
-                if len(hist_data) >= 3:
-                    mean_3y = hist_data.iloc[-3:].mean()
-                    max_val = hist_data.max()
-                    min_val = hist_data.min()
-                    
-                    hist_ex_abnormal = hist_data[~hist_data.index.isin([hist_data.idxmax(), hist_data.idxmin()])]
-                    mean_ex_abnormal = hist_ex_abnormal.mean() if len(hist_ex_abnormal) > 0 else hist_data.mean()
-                    
-                    x = hist_data.index.values
-                    y = hist_data.values
-                    z = np.polyfit(x, y, 1)
-                    p = np.poly1d(z)
-                    trend_val = p(target_year)
-                    
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("① 3년 평균 (산술)", f"{mean_3y:.1f}℃")
-                    c2.metric("② 10년 이상기온 제외 평균", f"{mean_ex_abnormal:.1f}℃", help="과거 데이터 중 Max, Min 1개씩 제외")
-                    c3.metric("③ 10년 Max / Min", f"{max_val:.1f}℃ / {min_val:.1f}℃")
-                    c4.metric("④ 선형추세 예측기온", f"{trend_val:.1f}℃", help=f"과거 {len(hist_data)}년 추세 반영")
-                else:
-                    st.warning(f"{m}월의 과거 데이터가 부족하여 예측 모델을 돌릴 수 없습니다.")
-    else:
-        st.info(f"✅ {target_year}년의 모든 월 데이터가 이미 업데이트되어 있어 미실적 월이 없습니다.")
