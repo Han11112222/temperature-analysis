@@ -442,7 +442,7 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
         )
 
     # ---------------------------------------------------------
-    # ★ 추가된 기능: 동적 꺾은선 그래프
+    # ★ 수정된 기능: 다중 선택 지원 동적 꺾은선 그래프
     # ---------------------------------------------------------
     st.markdown("---")
     st.subheader("📈 연도별 실적 및 예측 시나리오 비교")
@@ -468,25 +468,33 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
             "[예측] ③ Max/Min 제외 평균", 
             "[예측] ④ 선형추세"
         ]
-        selected_pred = st.radio(
-            "예측 시나리오 선택",
-            options=pred_list
+        # st.multiselect로 변경하여 다중 선택 가능하도록 수정
+        selected_preds = st.multiselect(
+            "예측 시나리오 선택 (다중 선택 가능)",
+            options=pred_list,
+            default=["[예측] ③ Max/Min 제외 평균"] # 기본적으로 하나는 선택되어 있도록 설정
         )
 
-    # 그래프용 데이터 전처리 (combined_df 사용)
+    # 기준 연도 데이터 추출
     df_year = combined_df[combined_df['구분'].astype(str) == selected_year].drop(columns=['구분']).T
     df_year.columns = [selected_year]
 
-    df_pred = combined_df[combined_df['구분'] == selected_pred].drop(columns=['구분']).T
-    df_pred.columns = [selected_pred]
+    # 선택된 예측 시나리오가 1개 이상일 경우 병합
+    if selected_preds:
+        df_preds = combined_df[combined_df['구분'].isin(selected_preds)].drop(columns=['구분']).T
+        df_preds.columns = selected_preds
+        df_plot = pd.concat([df_year, df_preds], axis=1)
+        y_cols = [selected_year] + selected_preds
+    else:
+        df_plot = df_year.copy()
+        y_cols = [selected_year]
 
-    df_plot = pd.concat([df_year, df_pred], axis=1)
     df_plot.index.name = '월'
     df_plot.reset_index(inplace=True)
 
-    # ★ 데이터를 그래프로 그리기 위해 숫자형(float)으로 강제 변환하여 오류 원천 차단
-    df_plot[selected_year] = pd.to_numeric(df_plot[selected_year], errors='coerce')
-    df_plot[selected_pred] = pd.to_numeric(df_plot[selected_pred], errors='coerce')
+    # 숫자형(float)으로 강제 변환하여 데이터 충돌 방지
+    for col in y_cols:
+        df_plot[col] = pd.to_numeric(df_plot[col], errors='coerce')
 
     # x축 월 표시 문자열로 변환
     df_plot['월'] = df_plot['월'].astype(str) + "월"
@@ -495,9 +503,9 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
     fig_line = px.line(
         df_plot,
         x='월',
-        y=[selected_year, selected_pred],
+        y=y_cols, # 다중 컬럼 리스트 전달
         markers=True,
-        title=f"{selected_year}년 실적 vs {selected_pred} 비교",
+        title=f"{selected_year}년 실적 및 예측 시나리오 다중 비교",
         labels={'value': '평균기온 (℃)', 'variable': '구분'}
     )
     
@@ -506,6 +514,13 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
         xaxis=dict(
             categoryorder='array',
             categoryarray=[f"{i}월" for i in range(1, 13)]
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
         )
     )
     fig_line.update_traces(connectgaps=False) 
