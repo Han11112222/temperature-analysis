@@ -318,25 +318,46 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
     pred_data = {
         '[예측] ① 3년 평균': [''] * 12,
         '[예측] ② 이상기온 제외': [''] * 12,
-        '[예측] ③ Max/Min 제외 평균': [''] * 12,
+        '[예측] ③ Max, Min, 이상기온 제외 평균': [''] * 12,
         '[예측] ④ 선형추세': [''] * 12
     }
     
     for m in range(1, 13):
+        # ★ 가스공사 이상기온 판정 전용 기준값 산출 (기준년도를 제외한 직전 7개년 대상)
+        past_7_m = pivot_all.loc[target_year-7:target_year-1, m].dropna()
+        if len(past_7_m) >= 7:
+            max_idx_7 = past_7_m.idxmax()
+            min_idx_7 = past_7_m.idxmin()
+            past_5_m = past_7_m.drop(index=[max_idx_7, min_idx_7])
+            mean_5yr_m = past_5_m.mean()
+            std_5yr_m = np.sqrt(np.sum((past_5_m - mean_5yr_m)**2) / 5)
+        else:
+            mean_5yr_m = past_7_m.mean() if len(past_7_m) > 0 else 0
+            std_5yr_m = past_7_m.std(ddof=0) if len(past_7_m) > 0 else 0
+
         hist_data = pivot_all.loc[start_year:target_year-1, m].dropna()
         if len(hist_data) >= 3:
             mean_3y = hist_data.iloc[-3:].mean()
             
-            mean_val_10y = hist_data.mean()
-            std_val_10y = hist_data.std(ddof=0)
-            if std_val_10y > 0:
-                hist_normal = hist_data[abs(hist_data - mean_val_10y) <= std_val_10y]
-                mean_normal = hist_normal.mean() if len(hist_normal) > 0 else mean_val_10y
+            # [예측] ② 이상기온 제외 항목 고도화 (정확한 7개년 기준 적용)
+            if std_5yr_m > 0:
+                hist_normal = hist_data[abs(hist_data - mean_5yr_m) <= std_5yr_m]
+                mean_normal = hist_normal.mean() if len(hist_normal) > 0 else hist_data.mean()
             else:
-                mean_normal = mean_val_10y
+                mean_normal = hist_data.mean()
  
-            hist_ex_abnormal = hist_data[~hist_data.index.isin([hist_data.idxmax(), hist_data.idxmin()])]
-            mean_ex_maxmin = hist_ex_abnormal.mean() if len(hist_ex_abnormal) > 0 else hist_data.mean()
+            # ★ [예측] ③ Han형님 요청 3단계 정밀 계산 로직
+            # 1단계: 표에 있는 역사적 기온 데이터 중 최고(Max), 최저(Min) 값 제외
+            hist_step1 = hist_data.drop(index=[hist_data.idxmax(), hist_data.idxmin()], errors='ignore')
+            
+            # 2단계: 남은 데이터 중 이상고온, 이상저온 데이터 제외 (최근 7개년 기준 적용)
+            if std_5yr_m > 0:
+                hist_step2 = hist_step1[abs(hist_step1 - mean_5yr_m) <= std_5yr_m]
+            else:
+                hist_step2 = hist_step1
+                
+            # 3단계: 최종 필터링을 거치고 최종적으로 남은 기온들을 대상으로 평균 산출
+            mean_ex_maxmin = hist_step2.mean() if len(hist_step2) > 0 else hist_data.mean()
             
             x = hist_data.index.values
             y = hist_data.values
@@ -346,7 +367,7 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
             
             pred_data['[예측] ① 3년 평균'][m-1] = f"{mean_3y:.1f}"
             pred_data['[예측] ② 이상기온 제외'][m-1] = f"{mean_normal:.1f}"
-            pred_data['[예측] ③ Max/Min 제외 평균'][m-1] = f"{mean_ex_maxmin:.1f}"
+            pred_data['[예측] ③ Max, Min, 이상기온 제외 평균'][m-1] = f"{mean_ex_maxmin:.1f}"
             pred_data['[예측] ④ 선형추세'][m-1] = f"{trend_val:.1f}"
     
     pred_df = pd.DataFrame(pred_data).T
@@ -412,7 +433,15 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
     styled_pivot = combined_df.style.format(custom_format, subset=list(range(1, 13))) \
                                    .apply(apply_matrix_style, axis=None)
                                
-    st.dataframe(styled_pivot, use_container_width=True, hide_index=True, height=600)
+    st.dataframe(
+        styled_pivot, 
+        use_container_width=True, 
+        hide_index=True, 
+        height=600,
+        column_config={
+            "구분": st.column_config.Column(width=300)
+        }
+    )
  
     st.write("") # 버튼 위 여백 확보
     
@@ -420,7 +449,6 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
     # 엑셀 파일 다운로드
     # ---------------------------------------------------------
     try:
-        # openpyxl 엔진을 활용해 정식 .xlsx 포맷으로 변환 시도
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             combined_df.to_excel(writer, index=False, sheet_name='기온예측매트릭스')
@@ -432,7 +460,6 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     except ImportError:
-        # 클라우드에 openpyxl 모듈이 없을 경우, 엑셀에서 한글이 깨지지 않는 utf-8-sig CSV 포맷으로 우회 제공
         csv_data = combined_df.to_csv(index=False, encoding='utf-8-sig')
         st.download_button(
             label="📥 엑셀(CSV) 파일 다운로드",
@@ -442,7 +469,7 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
         )
 
     # ---------------------------------------------------------
-    # ★ 수정된 기능: 다중 선택 지원 동적 꺾은선 그래프
+    # 다중 선택 지원 동적 꺾은선 그래프
     # ---------------------------------------------------------
     st.markdown("---")
     st.subheader("📈 연도별 실적 및 예측 시나리오 비교")
@@ -450,7 +477,6 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
     col1, col2 = st.columns(2)
 
     with col1:
-        # combined_df에서 연도(숫자)만 추출하여 내림차순 정렬
         year_list = [str(x) for x in combined_df['구분'] if str(x).isdigit()]
         year_list.sort(reverse=True)
         
@@ -461,25 +487,21 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
         )
 
     with col2:
-        # combined_df의 인덱스 이름과 완벽히 일치하도록 설정
         pred_list = [
             "[예측] ① 3년 평균",
             "[예측] ② 이상기온 제외",
-            "[예측] ③ Max/Min 제외 평균", 
+            "[예측] ③ Max, Min, 이상기온 제외 평균", 
             "[예측] ④ 선형추세"
         ]
-        # st.multiselect로 변경하여 다중 선택 가능하도록 수정
         selected_preds = st.multiselect(
             "예측 시나리오 선택 (다중 선택 가능)",
             options=pred_list,
-            default=["[예측] ③ Max/Min 제외 평균"] # 기본적으로 하나는 선택되어 있도록 설정
+            default=["[예측] ③ Max, Min, 이상기온 제외 평균"]
         )
 
-    # 기준 연도 데이터 추출
     df_year = combined_df[combined_df['구분'].astype(str) == selected_year].drop(columns=['구분']).T
     df_year.columns = [selected_year]
 
-    # 선택된 예측 시나리오가 1개 이상일 경우 병합
     if selected_preds:
         df_preds = combined_df[combined_df['구분'].isin(selected_preds)].drop(columns=['구분']).T
         df_preds.columns = selected_preds
@@ -492,24 +514,20 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
     df_plot.index.name = '월'
     df_plot.reset_index(inplace=True)
 
-    # 숫자형(float)으로 강제 변환하여 데이터 충돌 방지
     for col in y_cols:
         df_plot[col] = pd.to_numeric(df_plot[col], errors='coerce')
 
-    # x축 월 표시 문자열로 변환
     df_plot['월'] = df_plot['월'].astype(str) + "월"
 
-    # Plotly 라인 차트 생성
     fig_line = px.line(
         df_plot,
         x='월',
-        y=y_cols, # 다중 컬럼 리스트 전달
+        y=y_cols,
         markers=True,
         title=f"{selected_year}년 실적 및 예측 시나리오 다중 비교",
         labels={'value': '평균기온 (℃)', 'variable': '구분'}
     )
     
-    # 1월~12월 순서가 꼬이지 않도록 축 카테고리 순서 고정 및 빈 값 연결 설정
     fig_line.update_layout(
         xaxis=dict(
             categoryorder='array',
