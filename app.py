@@ -439,7 +439,8 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
         hide_index=True, 
         height=600,
         column_config={
-            "구분": st.column_config.Column(width=300)
+            # 300에서 220으로 축소하여 여백 최소화
+            "구분": st.column_config.Column(width=220)
         }
     )
  
