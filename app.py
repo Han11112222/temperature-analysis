@@ -5,10 +5,57 @@ import plotly.graph_objects as go
 import numpy as np
 import io
  
-# 페이지 기본 설정
+# 페이지 기본 설정 (가장 최상단에 위치해야 합니다)
 st.set_page_config(page_title="기온 분석 및 이상기온 대시보드", layout="wide")
- 
+
+# =====================================================================
+# [보안 기능] 세련된 암호 입력 메인 화면 설정
+# =====================================================================
+if "password_correct" not in st.session_state:
+    st.session_state["password_correct"] = False
+
+if not st.session_state["password_correct"]:
+    # 세련된 UI를 위한 HTML/CSS 스타일 적용
+    st.markdown("<h1 style='text-align: center; color: #2C3E50; margin-top: 10vh;'>🔒 비공개 대시보드 접근</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; font-size: 16px; color: #7F8C8D; margin-bottom: 30px;'>안전한 데이터 관리를 위해 지정된 암호를 입력해 주세요.</p>", unsafe_allow_html=True)
+    
+    # 입력창을 화면 중앙에 배치하기 위해 컬럼 분할 (1:1.5:1 비율)
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+    with col2:
+        pwd = st.text_input("Password", type="password", label_visibility="collapsed", placeholder="암호 4자리를 입력 후 Enter를 누르세요")
+        
+        if pwd:
+            if pwd == "1234":
+                st.session_state["password_correct"] = True
+                st.rerun()  # 화면 새로고침하여 대시보드 진입
+            else:
+                st.error("❌ 암호가 일치하지 않습니다. 다시 확인해 주세요.")
+        
+        # 하단 시그니처 문구
+        st.markdown(
+            """
+            <div style='text-align: center; margin-top: 80px; color: #95A5A6; font-size: 15px; font-weight: bold; letter-spacing: 1px;'>
+                '대성에너지 마케팅팀' <span style='font-style: italic; font-weight: normal;'>powered by Choihanyoub</span>
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
+    
+    # 암호가 틀렸거나 입력 전이면 아래 대시보드 코드가 실행되지 않도록 여기서 중단
+    st.stop()
+
+
+# =====================================================================
+# [인증 완료] 여기서부터 기존 대시보드 콘텐츠 시작
+# =====================================================================
 st.title("🌡️ 기온 분석 및 이상기온 모니터링 대시보드")
+
+# 상단 로그아웃 버튼 (원할 경우 다시 잠금 화면으로 돌아가기 위해 추가)
+col_title, col_btn = st.columns([9, 1])
+with col_btn:
+    if st.button("잠금 (로그아웃)"):
+        st.session_state["password_correct"] = False
+        st.rerun()
  
 # 1. 데이터 로드 (구글 시트 연동 유지)
 @st.cache_data(ttl=600)
@@ -323,7 +370,6 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
     }
     
     for m in range(1, 13):
-        # ★ 가스공사 이상기온 판정 전용 기준값 산출 (기준년도를 제외한 직전 7개년 대상)
         past_7_m = pivot_all.loc[target_year-7:target_year-1, m].dropna()
         if len(past_7_m) >= 7:
             max_idx_7 = past_7_m.idxmax()
@@ -339,24 +385,19 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
         if len(hist_data) >= 3:
             mean_3y = hist_data.iloc[-3:].mean()
             
-            # [예측] ② 이상기온 제외 항목 고도화 (정확한 7개년 기준 적용)
             if std_5yr_m > 0:
                 hist_normal = hist_data[abs(hist_data - mean_5yr_m) <= std_5yr_m]
                 mean_normal = hist_normal.mean() if len(hist_normal) > 0 else hist_data.mean()
             else:
                 mean_normal = hist_data.mean()
- 
-            # ★ [예측] ③ Han형님 요청 3단계 정밀 계산 로직
-            # 1단계: 표에 있는 역사적 기온 데이터 중 최고(Max), 최저(Min) 값 제외
+
             hist_step1 = hist_data.drop(index=[hist_data.idxmax(), hist_data.idxmin()], errors='ignore')
             
-            # 2단계: 남은 데이터 중 이상고온, 이상저온 데이터 제외 (최근 7개년 기준 적용)
             if std_5yr_m > 0:
                 hist_step2 = hist_step1[abs(hist_step1 - mean_5yr_m) <= std_5yr_m]
             else:
                 hist_step2 = hist_step1
                 
-            # 3단계: 최종 필터링을 거치고 최종적으로 남은 기온들을 대상으로 평균 산출
             mean_ex_maxmin = hist_step2.mean() if len(hist_step2) > 0 else hist_data.mean()
             
             x = hist_data.index.values
@@ -373,7 +414,6 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
     pred_df = pd.DataFrame(pred_data).T
     pred_df.columns = list(range(1, 13))
     
-    # 데이터 병합 및 열 이름 정리
     combined_df = pd.concat([pivot_10yr, pred_df])
     combined_df = combined_df.reset_index()
     combined_df.rename(columns={'index': '구분'}, inplace=True)
@@ -439,12 +479,11 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
         hide_index=True, 
         height=600,
         column_config={
-            # 300에서 220으로 축소하여 여백 최소화
             "구분": st.column_config.Column(width=220)
         }
     )
  
-    st.write("") # 버튼 위 여백 확보
+    st.write("") 
     
     # ---------------------------------------------------------
     # 엑셀 파일 다운로드
