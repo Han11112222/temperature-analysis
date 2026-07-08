@@ -5,59 +5,11 @@ import plotly.graph_objects as go
 import numpy as np
 import io
  
-# 페이지 기본 설정 (가장 최상단에 위치해야 합니다)
 st.set_page_config(page_title="기온 분석 및 이상기온 대시보드", layout="wide")
 
-# =====================================================================
-# [보안 기능] 세련된 암호 입력 메인 화면 설정
-# =====================================================================
-if "password_correct" not in st.session_state:
-    st.session_state["password_correct"] = False
-
-if not st.session_state["password_correct"]:
-    # 세련된 UI를 위한 HTML/CSS 스타일 적용
-    st.markdown("<h1 style='text-align: center; color: #2C3E50; margin-top: 10vh;'>🔒 비공개 대시보드 접근</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; font-size: 16px; color: #7F8C8D; margin-bottom: 30px;'>안전한 데이터 관리를 위해 지정된 암호를 입력해 주세요.</p>", unsafe_allow_html=True)
-    
-    # 입력창을 화면 중앙에 배치하기 위해 컬럼 분할 (1:1.5:1 비율)
-    col1, col2, col3 = st.columns([1, 1.5, 1])
-    with col2:
-        pwd = st.text_input("Password", type="password", label_visibility="collapsed", placeholder="암호 4자리를 입력 후 Enter를 누르세요")
-        
-        if pwd:
-            if pwd == "1234":
-                st.session_state["password_correct"] = True
-                st.rerun()  # 화면 새로고침하여 대시보드 진입
-            else:
-                st.error("❌ 암호가 일치하지 않습니다. 다시 확인해 주세요.")
-        
-        # 하단 시그니처 문구
-        st.markdown(
-            """
-            <div style='text-align: center; margin-top: 80px; color: #95A5A6; font-size: 15px; font-weight: bold; letter-spacing: 1px;'>
-                '대성에너지 마케팅팀' <span style='font-style: italic; font-weight: normal;'>powered by Choihanyoub</span>
-            </div>
-            """, 
-            unsafe_allow_html=True
-        )
-    
-    # 암호가 틀렸거나 입력 전이면 아래 대시보드 코드가 실행되지 않도록 여기서 중단
-    st.stop()
-
-
-# =====================================================================
-# [인증 완료] 여기서부터 기존 대시보드 콘텐츠 시작
-# =====================================================================
 st.title("🌡️ 기온 분석 및 이상기온 모니터링 대시보드")
-
-# 상단 로그아웃 버튼 (원할 경우 다시 잠금 화면으로 돌아가기 위해 추가)
-col_title, col_btn = st.columns([9, 1])
-with col_btn:
-    if st.button("잠금 (로그아웃)"):
-        st.session_state["password_correct"] = False
-        st.rerun()
  
-# 1. 데이터 로드 (구글 시트 연동 유지)
+# 1. 데이터 로드
 @st.cache_data(ttl=600)
 def load_data():
     sheet_id = "13HrIz6OytYDykXeXzXJ02I6XbaKin1YaKBoO2kBd6Bs"
@@ -336,14 +288,13 @@ fig_heatmap.update_traces(textfont=dict(size=14))
 st.plotly_chart(fig_heatmap, use_container_width=True)
  
 # =====================================================================
-# 6. 추가된 기능: 통합 시나리오 예측 매트릭스 및 엑셀 다운로드
+# 6. 통합 시나리오 예측 매트릭스 및 엑셀 다운로드
 # =====================================================================
 st.markdown("---")
  
 if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"):
     st.header("🔮 연도별 월별 평균기온 및 시나리오 예측 매트릭스")
     
-    # 1. 전체 10년 치 기본 데이터 구성
     monthly_all = df.groupby(['연도', '월'])['평균기온(℃)'].mean().reset_index()
     pivot_all = monthly_all.pivot(index='연도', columns='월', values='평균기온(℃)')
     
@@ -361,7 +312,6 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
             
     pivot_10yr = pivot_all.loc[recent_10_years].copy().sort_index()
     
-    # 2. 모든 월(1~12월)에 대해 시나리오 예측 계산 수행
     pred_data = {
         '[예측] ① 3년 평균': [''] * 12,
         '[예측] ② 이상기온 제외': [''] * 12,
@@ -485,9 +435,7 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
  
     st.write("") 
     
-    # ---------------------------------------------------------
     # 엑셀 파일 다운로드
-    # ---------------------------------------------------------
     try:
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
@@ -508,9 +456,7 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
             mime="text/csv"
         )
 
-    # ---------------------------------------------------------
     # 다중 선택 지원 동적 꺾은선 그래프
-    # ---------------------------------------------------------
     st.markdown("---")
     st.subheader("📈 연도별 실적 및 예측 시나리오 비교")
 
