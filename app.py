@@ -368,9 +368,11 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
     combined_df = combined_df.reset_index()
     combined_df.rename(columns={'index': '구분'}, inplace=True)
  
+    # ✅ [수정] apply_matrix_style: 월별로 과거7년 중 max/min 제외 5년 기준으로 이상기온 판단
     def apply_matrix_style(df_input):
         style_df = pd.DataFrame('', index=df_input.index, columns=df_input.columns)
         
+        # 예측행 스타일 (변경 없음)
         for idx in df_input.index:
             gubun_val = str(df_input.loc[idx, '구분'])
             if '[예측]' in gubun_val:
@@ -378,47 +380,72 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
                 style_df.loc[idx, '구분'] = 'background-color: #f8f9fa; font-weight: bold; color: #444444; text-align: left; white-space: nowrap;'
             else:
                 style_df.loc[idx, '구분'] = 'text-align: left; font-weight: bold; white-space: nowrap;'
-                
-        hist_indices = list(range(len(recent_10_years)))
-        
+
+        # 실적 연도 행 인덱스 (예측행 제외)
+        hist_indices = [
+            idx for idx in df_input.index
+            if '[예측]' not in str(df_input.loc[idx, '구분'])
+        ]
+
         for m in range(1, 13):
-            hist_series = pd.to_numeric(df_input.loc[hist_indices, m], errors='coerce').dropna()
-            
-            mean_val, std_val = 0, 0
-            if len(hist_series) >= 3:
-                max_idx = hist_series.idxmax()
-                min_idx = hist_series.idxmin()
-                ex_series = hist_series.drop(index=[max_idx, min_idx], errors='ignore')
-                
-                if len(ex_series) > 0:
-                    mean_val = ex_series.mean()
-                    std_val = np.sqrt(np.sum((ex_series - mean_val)**2) / len(ex_series))
-                else:
-                    mean_val = hist_series.mean()
-            
+            # ✅ 핵심 수정: 월별로 과거7년(target_year-7 ~ target_year-1) 중
+            #    max/min 제외 5년 평균/표준편차로 이상기온 기준 계산
+            past_7_col = []
             for idx in hist_indices:
-                val = df_input.loc[idx, m]
-                if pd.notna(val) and val != "":
-                    try:
-                        val_f = float(val)
-                        if std_val > 0 and abs(val_f - mean_val) > std_val:
-                            if val_f > mean_val:
-                               style_df.loc[idx, m] = 'background-color: #ffebee; color: black; text-align: center;'
-                            else:
-                               style_df.loc[idx, m] = 'background-color: #e3f2fd; color: black; text-align: center;'
+                yr_val = df_input.loc[idx, '구분']
+                try:
+                    yr = int(str(yr_val))
+                    if target_year - 7 <= yr <= target_year - 1:
+                        cell_val = df_input.loc[idx, m]
+                        if pd.notna(cell_val) and cell_val != "" and cell_val != "None":
+                            past_7_col.append(float(cell_val))
+                except (ValueError, TypeError):
+                    pass
+
+            mean_val, std_val = 0.0, 0.0
+            if len(past_7_col) >= 3:
+                s = pd.Series(past_7_col)
+                max_idx_s = s.idxmax()
+                min_idx_s = s.idxmin()
+                s5 = s.drop(index=[max_idx_s, min_idx_s]) if max_idx_s != min_idx_s else s.drop(index=max_idx_s)
+                if len(s5) > 0:
+                    mean_val = s5.mean()
+                    std_val = np.sqrt(np.sum((s5 - mean_val) ** 2) / len(s5))
+
+            # 각 실적 연도 행에 색상 적용
+            for idx in hist_indices:
+                cell_val = df_input.loc[idx, m]
+                # None, NaN, 빈 문자열 처리
+                if cell_val is None or (isinstance(cell_val, float) and np.isnan(cell_val)):
+                    style_df.loc[idx, m] = 'text-align: center; color: #aaaaaa;'
+                    continue
+                cell_str = str(cell_val).strip()
+                if cell_str == '' or cell_str.lower() == 'none' or cell_str.lower() == 'nan':
+                    style_df.loc[idx, m] = 'text-align: center; color: #aaaaaa;'
+                    continue
+                try:
+                    val_f = float(cell_str)
+                    if std_val > 0 and abs(val_f - mean_val) > std_val:
+                        if val_f > mean_val:
+                            # 이상고온: 붉은색
+                            style_df.loc[idx, m] = 'background-color: #ffebee; color: black; text-align: center;'
                         else:
-                            style_df.loc[idx, m] = 'text-align: center;'
-                    except ValueError:
+                            # 이상저온: 푸른색
+                            style_df.loc[idx, m] = 'background-color: #e3f2fd; color: black; text-align: center;'
+                    else:
                         style_df.loc[idx, m] = 'text-align: center;'
-                else:
+                except (ValueError, TypeError):
                     style_df.loc[idx, m] = 'text-align: center;'
-                    
+
         return style_df
  
     def custom_format(x):
-        if pd.isna(x) or x == "": return ""
+        if x is None: return ""
+        if isinstance(x, float) and np.isnan(x): return ""
+        s = str(x).strip()
+        if s.lower() in ('none', 'nan', ''): return ""
         if isinstance(x, (int, float)): return f"{x:.1f}"
-        return str(x)
+        return s
  
     styled_pivot = combined_df.style.format(custom_format, subset=list(range(1, 13))) \
                                    .apply(apply_matrix_style, axis=None)
