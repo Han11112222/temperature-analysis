@@ -320,6 +320,7 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
     }
     
     for m in range(1, 13):
+        # 이상기온 판단 기준: 과거 7년(target_year-7 ~ target_year-1) 중 max/min 제외 5년
         past_7_m = pivot_all.loc[target_year-7:target_year-1, m].dropna()
         if len(past_7_m) >= 7:
             max_idx_7 = past_7_m.idxmax()
@@ -331,16 +332,21 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
             mean_5yr_m = past_7_m.mean() if len(past_7_m) > 0 else 0
             std_5yr_m = past_7_m.std(ddof=0) if len(past_7_m) > 0 else 0
 
-        hist_data = pivot_all.loc[start_year:target_year-1, m].dropna()
+        # ✅ 핵심 수정: target_year 포함하여 현재 연도까지의 실적 데이터 사용
+        hist_data = pivot_all.loc[start_year:target_year, m].dropna()
+
         if len(hist_data) >= 3:
+            # ① 최신 3년 평균 (target_year 포함한 최근 3개 실적 연도)
             mean_3y = hist_data.iloc[-3:].mean()
             
+            # ② 이상기온 제외 평균
             if std_5yr_m > 0:
                 hist_normal = hist_data[abs(hist_data - mean_5yr_m) <= std_5yr_m]
                 mean_normal = hist_normal.mean() if len(hist_normal) > 0 else hist_data.mean()
             else:
                 mean_normal = hist_data.mean()
 
+            # ③ Max, Min, 이상기온 제외 평균
             hist_step1 = hist_data.drop(index=[hist_data.idxmax(), hist_data.idxmin()], errors='ignore')
             
             if std_5yr_m > 0:
@@ -350,11 +356,12 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
                 
             mean_ex_maxmin = hist_step2.mean() if len(hist_step2) > 0 else hist_data.mean()
             
+            # ④ 선형추세: target_year까지 포함하되, target_year+1을 예측
             x = hist_data.index.values
-            y = hist_data.values
-            z = np.polyfit(x, y, 1)
+            y_vals = hist_data.values
+            z = np.polyfit(x, y_vals, 1)
             p = np.poly1d(z)
-            trend_val = p(target_year)
+            trend_val = p(target_year + 1)  # 다음 연도 예측값
             
             pred_data['[예측] ① 3년 평균'][m-1] = f"{mean_3y:.1f}"
             pred_data['[예측] ② 이상기온 제외'][m-1] = f"{mean_normal:.1f}"
@@ -368,11 +375,9 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
     combined_df = combined_df.reset_index()
     combined_df.rename(columns={'index': '구분'}, inplace=True)
  
-    # ✅ [수정] apply_matrix_style: 월별로 과거7년 중 max/min 제외 5년 기준으로 이상기온 판단
     def apply_matrix_style(df_input):
         style_df = pd.DataFrame('', index=df_input.index, columns=df_input.columns)
         
-        # 예측행 스타일 (변경 없음)
         for idx in df_input.index:
             gubun_val = str(df_input.loc[idx, '구분'])
             if '[예측]' in gubun_val:
@@ -381,15 +386,12 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
             else:
                 style_df.loc[idx, '구분'] = 'text-align: left; font-weight: bold; white-space: nowrap;'
 
-        # 실적 연도 행 인덱스 (예측행 제외)
         hist_indices = [
             idx for idx in df_input.index
             if '[예측]' not in str(df_input.loc[idx, '구분'])
         ]
 
         for m in range(1, 13):
-            # ✅ 핵심 수정: 월별로 과거7년(target_year-7 ~ target_year-1) 중
-            #    max/min 제외 5년 평균/표준편차로 이상기온 기준 계산
             past_7_col = []
             for idx in hist_indices:
                 yr_val = df_input.loc[idx, '구분']
@@ -412,10 +414,8 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
                     mean_val = s5.mean()
                     std_val = np.sqrt(np.sum((s5 - mean_val) ** 2) / len(s5))
 
-            # 각 실적 연도 행에 색상 적용
             for idx in hist_indices:
                 cell_val = df_input.loc[idx, m]
-                # None, NaN, 빈 문자열 처리
                 if cell_val is None or (isinstance(cell_val, float) and np.isnan(cell_val)):
                     style_df.loc[idx, m] = 'text-align: center; color: #aaaaaa;'
                     continue
@@ -427,10 +427,8 @@ if st.toggle("📈 평균기온 10년 분석 및 미실적 월 예측 활성화"
                     val_f = float(cell_str)
                     if std_val > 0 and abs(val_f - mean_val) > std_val:
                         if val_f > mean_val:
-                            # 이상고온: 붉은색
                             style_df.loc[idx, m] = 'background-color: #ffebee; color: black; text-align: center;'
                         else:
-                            # 이상저온: 푸른색
                             style_df.loc[idx, m] = 'background-color: #e3f2fd; color: black; text-align: center;'
                     else:
                         style_df.loc[idx, m] = 'text-align: center;'
