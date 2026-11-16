@@ -29,10 +29,14 @@ df = load_data()
  
 max_year = int(df['연도'].max())
 target_year = max_year
+
+# 평균기온 실적이 있는 가장 최근 일자의 월을 기본 선택 월로 사용
+_valid_dates = df.dropna(subset=['평균기온(℃)'])['일자']
+latest_month = int(_valid_dates.max().month) if not _valid_dates.empty else 1
  
 # 2. 통합 컨트롤 UI
 st.subheader("🗓️ 전체 분석 월 선택")
-selected_month = st.selectbox("", list(range(1, 13)), index=0, format_func=lambda x: f"{x}월")
+selected_month = st.selectbox("", list(range(1, 13)), index=latest_month - 1, format_func=lambda x: f"{x}월")
  
 st.markdown("---")
  
